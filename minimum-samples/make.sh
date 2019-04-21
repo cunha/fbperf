@@ -1,7 +1,7 @@
 #!/bin/bash
 set -eu
 
-INPUT=$(pwd)/tests/daiquery_8120.csv
+INPUT=$(pwd)/tests/daiquery_8120.csv.gz
 OUTDIR=$(pwd)/output
 
 mkdir -p $OUTDIR

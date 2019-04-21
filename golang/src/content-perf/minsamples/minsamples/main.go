@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -64,9 +65,12 @@ func (s *Stats) Join() {
 
 func main() {
 	outdir := os.Args[2]
-	csvfd, err := os.Open(os.Args[1])
+	gzfd, err := os.Open(os.Args[1])
 	minsamples.CheckError(err)
-	defer csvfd.Close()
+	defer gzfd.Close()
+
+	csvfd, err := gzip.NewReader(gzfd)
+	minsamples.CheckError(err)
 
 	samples2stats := make(map[uint32]*Stats)
 
