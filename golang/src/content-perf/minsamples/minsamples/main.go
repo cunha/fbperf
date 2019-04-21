@@ -40,6 +40,7 @@ func NewStats(samples uint32, outdir string) *Stats {
 func (s *Stats) Run() {
 	defer s.waitGroup.Done()
 	defer s.fd.Close()
+	s.fd.WriteString("MinRTTP10,MinRttP10Diff,MinRTTP50,MinRttP50Diff\n")
 	rows := 0
 	for {
 		row := <-s.Chan
@@ -50,7 +51,7 @@ func (s *Stats) Run() {
 		rs := row.Parse()
 		minRttP10Diff := rs.MinRttP10Upper - rs.MinRttP10Lower
 		minRttP50Diff := rs.MinRttP50Upper - rs.MinRttP50Lower
-		str := fmt.Sprintf("%d %d %d %d\n",
+		str := fmt.Sprintf("%d,%d,%d,%d\n",
 			rs.MinRttP10, minRttP10Diff,
 			rs.MinRttP50, minRttP50Diff)
 		s.fd.WriteString(str)
