@@ -25,7 +25,7 @@ CSVCOL_RTT_PCTILES=minrtt_ms_percentiles
 RTT_PCTILES="10 50"
 
 # Get subsampling thresholds
-subsamples=$(xsv select $CSVCOL_NSAMPLES --no-headers $INPUT | sort | uniq)
+subsamples=$(xsv select $CSVCOL_NSAMPLES $INPUT | tail -n +2 | sort | uniq)
 
 for ss in $subsamples ; do
     xsv search --select $CSVCOL_NSAMPLES $ss $INPUT \

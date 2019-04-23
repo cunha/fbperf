@@ -4,7 +4,8 @@ set -eu
 PROGDIR=$(cd "$(dirname "$0")" ; pwd -P)
 export GOPATH=$PROGDIR
 
-go install content-perf/minsamples/minsamples
+go install cdnperf/minsamples
+go install cdnperf/pfxlen
 
 if [ $# -ge 2 ] ; then
     bin=$1
