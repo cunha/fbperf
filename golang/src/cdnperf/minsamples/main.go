@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"cdnperf"
+	"cdnperf/csvhelp"
 	"cdnperf/csvhelp/cicsv"
 )
 
@@ -119,7 +120,7 @@ func main() {
 
 	samples2stats := make(map[uint32]*Stats)
 
-	cicsv.ParseFile(input, func(row *cicsv.Row) {
+	csvhelp.ParseFile(input, func(row *cicsv.Row) {
 		stats, ok := samples2stats[row.LimitSamples]
 		if !ok {
 			log.Printf("Creating Stats(%d)\n", row.LimitSamples)

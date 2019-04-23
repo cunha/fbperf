@@ -1,15 +1,8 @@
 package cicsv
 
 import (
-	"compress/gzip"
-	"encoding/csv"
 	"encoding/json"
-	"io"
 	"log"
-	"os"
-
-	"cdnperf"
-	"github.com/gocarina/gocsv"
 )
 
 type Row struct {
@@ -34,23 +27,6 @@ type RowSummary struct {
 	MinRttP10CiSize int16
 	MinRttP50       int16
 	MinRttP50CiSize int16
-}
-
-func ParseFile(fpath string, rowfunc func(r *Row)) {
-	// This probably sets some gocsv-wide configuration variable,
-	// and thus is not thread-safe.
-	gocsv.SetCSVReader(func(in io.Reader) gocsv.CSVReader {
-		r := csv.NewReader(in)
-		r.Comma = '\t'
-		return r
-	})
-	gzfd, err := os.Open(fpath)
-	cdnperf.CheckError(err)
-	defer gzfd.Close()
-	csvfd, err := gzip.NewReader(gzfd)
-	cdnperf.CheckError(err)
-	err = gocsv.UnmarshalToCallback(csvfd, rowfunc)
-	cdnperf.CheckError(err)
 }
 
 func (r *Row) Summarize() *RowSummary {
