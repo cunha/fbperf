@@ -1,4 +1,4 @@
 /bin
 /pkg
 /src/*
-!/src/content-perf
+!/src/cdnperf
