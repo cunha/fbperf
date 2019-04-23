@@ -34,7 +34,7 @@ def create_parser():
             metavar='NUMBERS',
             type=int,
             required=False,
-            default=[0] + list(range(16, 25, 2)) + list(range(32, 65, 8)),
+            default=list(range(16, 25, 2)) + list(range(32, 65, 8)),
             help='Prefix lengths to consider %(default)s')
     parser.add_argument('--pfx-classes',
             dest='classes',
@@ -43,20 +43,18 @@ def create_parser():
             metavar='CLASSES',
             type=str,
             required=False,
-            default=['BGP4', 'BGP6', 'ASN4', 'ASN6', 'S24', 'S48'],
+            default=['BGP4', 'BGP6', 'ASN4', 'S24', 'S48'],
             help='Prefix classes to consider %(default)s')
     return parser
 
 
 def read_traffic_ratios(fpath, opts):
-    class2ratio = dict()
+    desc2ratio = dict()
     with open(fpath) as fd:
         for line in fd:
             prefixClass, _bytes, ratio = line.split()
-            if prefixClass not in opts.classes:
-                continue
-            class2ratio[prefixClass] = float(ratio)
-    return class2ratio
+            desc2ratio[prefixClass] = float(ratio)
+    return desc2ratio
 
 
 def read_spread_quantiles(fpath):
@@ -128,7 +126,7 @@ def main():
         opts.streads = list((int(s[0]), int(s[1])) for s in splits)
 
     fpath = os.path.join(opts.outdir, 'traffic_ratios.txt')
-    class2ratio = read_traffic_ratios(fpath, opts)
+    desc2ratio = read_traffic_ratios(fpath, opts)
 
     for spread in opts.spreads:
         lo, up = spread
@@ -149,7 +147,8 @@ def main():
             if not os.path.exists(fpath):
                 logging.warning('File %s does not exist, skipping', fpath)
                 continue
-            label = '/%d prefixes' % pfxlen
+            label = '/%d prefixes [%d%% of traffic]' % (pfxlen,
+                    int(100*desc2ratio[str(pfxlen)]))
             label2cdf[label] = read_cdf(fpath)
         xlabel = "MinRTT (P%d, P%d) Spread [ms]" % spread
         outfn = os.path.join(opts.outdir, 'pfxlen_%dspread%d_cdf.pdf' % spread)
@@ -162,7 +161,7 @@ def main():
             if not os.path.exists(fpath):
                 logging.warning('File %s does not exist, skipping', fpath)
                 continue
-            label = '%s [%d%% of traffic]' % (cls, int(100*class2ratio[cls]))
+            label = '%s [%d%% of traffic]' % (cls, int(100*desc2ratio[cls]))
             label2cdf[label] = read_cdf(fpath)
         xlabel = "MinRTT (P%d, P%d) Spread [ms]" % spread
         outfn = os.path.join(opts.outdir, 'class_%dspread%d_cdf.pdf' % spread)

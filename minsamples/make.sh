@@ -9,6 +9,6 @@ mkdir -p $OUTDIR
 
 ../golang/install.sh minsamples $(pwd)
 
-# ./minsamples $INPUT $OUTDIR
+./minsamples $INPUT $OUTDIR
 
 ./plot.py --outdir output/
