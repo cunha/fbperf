@@ -1,7 +1,18 @@
+This directory contains helper/test code for computing confidence
+intervals of means, percentiles, difference of means, and difference of
+percentiles
+
+# Confidence Interval for Means and Difference of Means
+
+For this we are just assuming that the sample is normally distributed
+and applying normal techniques.
+
+https://en.wikipedia.org/wiki/Confidence_interval
+ihttps://www.kean.edu/~fosborne/bstat/06b2means.html
+
 # Confidence Interval for Percentiles
 
-This is helper/test code for computing percentiles of distributions.
-The approach was suggested to us by Matt Calder.  We have used the
+This approach was suggested to us by Matt Calder.  We have used the
 following references to get an idea of what it works:
 
 https://stats.stackexchange.com/questions/99829/how-to-obtain-a-confidence-interval-for-a-percentile
@@ -23,4 +34,23 @@ The following is a reference we can use for the technique.
   publisher={John Wiley and Sons},
   year={1980}
 }
+```
+
+# Confidence Interval of Difference Between Medians
+
+This approach was found by Brandon.  It is distribution-free and should
+work for small samples too.  BibTeX:
+
+```
+@article{price02medianci,
+author = {Robert M. Price and Douglas G. Bonett},
+title = {{Distribution-Free Confidence Intervals for Difference and Ratio of Medians}},
+journal = {Journal of Statistical Computation and Simulation},
+volume = {72},
+number = {2},
+pages = {119--124},
+year  = {2002},
+}
+publisher = {Taylor & Francis},
+doi = {10.1080/00949650212140},
 ```
