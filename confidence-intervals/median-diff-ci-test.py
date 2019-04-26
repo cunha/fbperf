@@ -27,7 +27,7 @@ def medianvar(sortedvec, zj):
 def median_diff_ci(sortedvec1, sortedvec2, z=1.96, zj=2):
     med1, med2 = median(sortedvec1), median(sortedvec2)
     var1, var2 = medianvar(sortedvec1, zj), medianvar(sortedvec2, zj)
-    md = math.fabs(med1 - med2)
+    md = med1 - med2
     interval = z * math.sqrt(var1 + var2)
     return (md - interval, md + interval)
 
