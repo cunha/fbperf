@@ -43,7 +43,7 @@ def create_parser():
             metavar='CLASSES',
             type=str,
             required=False,
-            default=['BGP4', 'BGP6', 'ASN4', 'S24', 'S48'],
+            default=['BGP4', 'ASN4', 'S24'],
             help='Prefix classes to consider %(default)s')
     return parser
 
@@ -119,7 +119,6 @@ def main():
     logging.basicConfig(level=logging.DEBUG, format="%(asctime)s:%(levelname)s: %(message)s")
     logging.getLogger().addHandler(logging.StreamHandler())
     logging.getLogger('matplotlib').setLevel(logging.ERROR)
-    plt.style.use('ggplot')
 
     if isinstance(opts.spreads[0], str):
         splits = list(s.split(',') for s in opts.spreads)
@@ -161,7 +160,7 @@ def main():
             if not os.path.exists(fpath):
                 logging.warning('File %s does not exist, skipping', fpath)
                 continue
-            label = '%s [%d%% of traffic]' % (cls, int(100*desc2ratio[cls]))
+            traffic = '%s [%d%% of traffic]' % (cls, int(100*desc2ratio[cls]))
             label2cdf[label] = read_cdf(fpath)
         xlabel = "MinRTT (P%d, P%d) Spread [ms]" % spread
         outfn = os.path.join(opts.outdir, 'class_%dspread%d_cdf.pdf' % spread)
