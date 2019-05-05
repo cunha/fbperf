@@ -11,6 +11,26 @@ from typing import Callable
 from csvhelp import Row, RouteInfo, RowParseError
 
 
+PEER_SUBTYPE_MAP = {
+    "private": "private",
+    "": "",
+    "public": "public",
+    "paid": "private",
+    "route_server": "public",
+    "mixed": "private",
+}
+
+PEER_TYPE_ORDER = [
+    ("peering", "private"),
+    ("transit", ""),
+    ("peering", "public"),
+]
+
+# This gets applied after SUBTYPE_MAP above, so the mixed subtype has been
+# replaced by private:
+PEER_TYPE_IGNORE = [("mixed", "private")]
+
+
 class ImprovementTracker:
     def __init__(
         self,
@@ -27,8 +47,8 @@ class ImprovementTracker:
         if not self.validfunc(row, pri, alt):
             return
         assert pri.minrtt_ms_p50 - alt.minrtt_ms_p50 > 0, "no opportunity?"
-        pritype = (pri.peer_type, pri.peer_subtype)
-        alttype = (alt.peer_type, alt.peer_subtype)
+        pritype = (pri.peer_type, PEER_SUBTYPE_MAP[pri.peer_subtype])
+        alttype = (alt.peer_type, PEER_SUBTYPE_MAP[alt.peer_subtype])
         prop2bytes = self.pri2alt2prop2bytes[pritype][alttype]
         prop2bytes["total"] += row.bytes_acked_sum
         for propfunc in PROPERTY_FUNCTIONS:
@@ -37,17 +57,37 @@ class ImprovementTracker:
 
     def dump_latex_string(self, stream):
         stream.write("%% %s\n" % self.description)
-        for pri, alt2prop2bytes in self.pri2alt2prop2bytes.items():
-            for alt, prop2bytes in alt2prop2bytes.items():
+        for pri in PEER_TYPE_ORDER:
+            for alt in PEER_TYPE_ORDER:
+                prop2bytes = self.pri2alt2prop2bytes[pri][alt]
+                if pri in PEER_TYPE_IGNORE or alt in PEER_TYPE_IGNORE:
+                    continue
+                # if PEER_TYPE_ORDER.index(alt) < PEER_TYPE_ORDER.index(pri):
+                #     continue
                 pristr = "%s/%s" % pri
                 altstr = "%s/%s" % alt
-                improv = 100 * prop2bytes["total"] / global_bytes_acked_sum
-                string = "%s & %s & %.1f%% " % (pristr, altstr, improv)
-                string += "[%.1f%%, %.1f%%, %.1f%%] " % (
-                        100 * prop2bytes["shorter"] / global_bytes_acked_sum
-                        100 * prop2bytes["equal"] / global_bytes_acked_sum
-                        100 * prop2bytes["longer"] / global_bytes_acked_sum
-                    )
+                if pristr.endswith("/"):
+                    pristr = pristr[:-1]
+                if altstr.endswith("/"):
+                    altstr = altstr[:-1]
+                improv = 1000 * prop2bytes["total"] / global_bytes_acked_sum
+                string = "%s & %s & %.0f\permil " % (pristr, altstr, improv)
+                string += "[%.0f, %.0f, %.0f] " % (
+                    1000
+                    * prop2bytes["shorter_wo_prepend"]
+                    / global_bytes_acked_sum,
+                    1000
+                    * prop2bytes["equal_wo_prepend"]
+                    / global_bytes_acked_sum,
+                    1000
+                    * prop2bytes["longer_wo_prepend"]
+                    / global_bytes_acked_sum,
+                )
+                string += "[%.0f, %.0f, %.0f] " % (
+                    1000 * prop2bytes["shorter"] / global_bytes_acked_sum,
+                    1000 * prop2bytes["equal"] / global_bytes_acked_sum,
+                    1000 * prop2bytes["longer"] / global_bytes_acked_sum,
+                )
                 string += "\\\\\n"
                 stream.write(string)
 
@@ -66,10 +106,10 @@ class ImprovementTracker:
         prilen = pri.bgp_as_path_min_len_prepending_removed
         altlen = alt.bgp_as_path_min_len_prepending_removed
         if prilen < altlen:
-            return "longer"
+            return "longer_wo_prepend"
         if prilen == altlen:
-            return "equal"
-        return "shorter"
+            return "equal_wo_prepend"
+        return "shorter_wo_prepend"
 
 
 PROPERTY_FUNCTIONS = [
