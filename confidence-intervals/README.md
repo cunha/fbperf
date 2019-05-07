@@ -32,7 +32,7 @@ The following is a reference we can use for the technique.
 
 ```
 @book{conover80stats,
-  author={Conover, W. J.}
+  author={Conover, W. J.},
   title={{Practical Nonparametric Statistics}},
   publisher={John Wiley and Sons},
   year={1980}
