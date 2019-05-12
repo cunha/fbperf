@@ -11,6 +11,8 @@ class RowParseError(RuntimeError):
 
 
 class Row:
+    # pylint: disable=E1101
+
     FIELDS = {
         int: ["bytes_acked_sum", "time_bucket"],
         _str_to_bool: ["client_is_ipv6"],
@@ -30,12 +32,11 @@ class Row:
     def key(self):
         return (self.vip_metro, self.bgp_ip_prefix)
 
-    def primary_route(self):
-        return self.num2rtinfo.get(0, None)
-
-    def best_alternate_route(self, metric="minrtt_ms_p50", aggfunc=min):
-        validfunc = lambda x: x.apm_route_num > 1
-        return self.best_route(metric, aggfunc, validfunc)
+    def primary_route(self, vf):
+        rtinfo = self.num2rtinfo.get(0, None)
+        if rtinfo is None or not vf(rtinfo):
+            return None
+        return rtinfo
 
     def best_route(
         self, metric="minrtt_ms_p50", aggfunc=min, validfunc=lambda x: True
@@ -54,9 +55,20 @@ class Row:
                 best_metric = rti_metric
         return best_rti
 
-    def get_primary_bestalt(self):
-        primary = self.primary_route()
-        bestalt = self.best_alternate_route()
+    def get_primary_bestalt_minrtt(self, samples):
+        vf = lambda x: x.num_samples >= samples
+        primary = self.primary_route(vf)
+        vf = lambda x: x.apm_route_num > 1 and x.num_samples > samples
+        bestalt = self.best_route("minrtt_ms_p50", min, vf)
+        if bestalt is None:
+            bestalt = primary
+        return (primary, bestalt)
+
+    def get_primary_bestalt_hdratio(self, samples):
+        vf = lambda x: x.hdratio_num_samples >= samples
+        primary = self.primary_route(vf)
+        vf = lambda x: x.apm_route_num > 1 and x.hdratio_num_samples > samples
+        bestalt = self.best_route("hdratio", max, vf)
         if bestalt is None:
             bestalt = primary
         return (primary, bestalt)
@@ -67,11 +79,15 @@ class Row:
         for i in range(Row.MAX_ROUTE_NUM + 1):
             if row["r%d_num_samples" % i] == "NULL":
                 continue
+            if row["r%d_hdratio" % i] == "NULL":
+                continue
             num2rtinfo[i] = RouteInfo(i, row)
         return num2rtinfo
 
 
 class RouteInfo:
+    # pylint: disable=E1101
+
     FIELDS = {
         int: [
             "num_samples",
@@ -79,7 +95,6 @@ class RouteInfo:
             "bgp_as_path_len",
             "bgp_as_path_min_len_prepending_removed",
             "minrtt_ms_p10",
-            "minrtt_ms_p25",
             "minrtt_ms_p50",
             "minrtt_ms_p50_ci_lb",
             "minrtt_ms_p50_ci_ub",
