@@ -4,11 +4,11 @@ from collections import defaultdict
 import csv
 import json
 import logging
-import math
 import os
 import sys
 
-from csvhelp import Row, RouteInfo, RowParseError
+from csvhelp import Row, RowParseError
+import csvhelp
 from buildcdf import buildcdf
 
 
@@ -50,28 +50,6 @@ CONFIG = {
 global_bytes_acked_sum = 0
 
 
-def median_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
-    med1 = pri.minrtt_ms_p50
-    med2 = alt.minrtt_ms_p50
-    var1 = pri.minrtt_ms_p50_var
-    var2 = alt.minrtt_ms_p50_var
-    md = med1 - med2
-    interval = z * math.sqrt(var1 + var2)
-    return (md - interval, md, md + interval)
-
-
-def mean_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
-    avg1 = pri.hdratio
-    avg2 = alt.hdratio
-    var1 = pri.hdratio_var
-    var2 = alt.hdratio_var
-    n1 = pri.hdratio_num_samples
-    n2 = alt.hdratio_num_samples
-    diff = avg1 - avg2
-    interval = z * math.sqrt(var1/n1 + var2/n2)
-    return (diff - interval, diff, diff + interval)
-
-
 class NotEnoughSamplesError(ValueError):
     pass
 
@@ -87,7 +65,7 @@ class PrevalenceTracker:
             self.pri_subtype = primary.peer_subtype
             self.alt_type = bestalt.peer_type
             self.alt_subtype = bestalt.peer_subtype
-            self.diff_ci = median_diff_ci(primary, bestalt)
+            self.diff_ci = csvhelp.rtt_median_diff_ci(primary, bestalt)
 
     class HdRatioStats:
         def __init__(self, row):
@@ -99,7 +77,7 @@ class PrevalenceTracker:
             self.pri_subtype = primary.peer_subtype
             self.alt_type = bestalt.peer_type
             self.alt_subtype = bestalt.peer_subtype
-            self.diff_ci = mean_diff_ci(primary, bestalt)
+            self.diff_ci = csvhelp.hdr_mean_diff_ci(primary, bestalt)
 
     class Summary:
         def __init__(self, time2stats, improvfunc):
@@ -171,11 +149,11 @@ class PrevalenceTracker:
         k = row.key()
         try:
             self.key2time2rttstats[k][t] = PrevalenceTracker.MinRttStats(row)
-        except NotEnoughSamplesError as se:
+        except NotEnoughSamplesError:
             pass
         try:
             self.key2time2hdrstats[k][t] = PrevalenceTracker.HdRatioStats(row)
-        except NotEnoughSamplesError as se:
+        except NotEnoughSamplesError:
             pass
 
     def dump_cdfs_minrtt(self, outdir, improvfunc):
@@ -351,7 +329,7 @@ def main():
             row = Row(csvrow)
         except RowParseError:
             continue
-        global_bytes_acked_sum += row.bytes_acked_sum
+        global_bytes_acked_sum += row.bytes_acked_sum  # pylint: disable=E1101
         tracker.update(row)
 
     NAME2FUNC = {

@@ -9,7 +9,12 @@ import sys
 from typing import Callable
 
 from csvhelp import Row, RouteInfo, RowParseError
+import csvhelp
 
+CONFIG = {
+        "minrtt_min_samples": 200,
+        "hdratio_min_samples": 200,
+}
 
 PEER_SUBTYPE_MAP = {
     "private": "private",
@@ -46,7 +51,7 @@ class ImprovementTracker:
     def update(self, row, pri, alt):
         if not self.validfunc(row, pri, alt):
             return
-        assert pri.minrtt_ms_p50 - alt.minrtt_ms_p50 > 0, "no opportunity?"
+        # assert pri.minrtt_ms_p50 - alt.minrtt_ms_p50 > 0, "no opportunity?"
         pritype = (pri.peer_type, PEER_SUBTYPE_MAP[pri.peer_subtype])
         alttype = (alt.peer_type, PEER_SUBTYPE_MAP[alt.peer_subtype])
         prop2bytes = self.pri2alt2prop2bytes[pritype][alttype]
@@ -71,7 +76,7 @@ class ImprovementTracker:
                 if altstr.endswith("/"):
                     altstr = altstr[:-1]
                 improv = 1000 * prop2bytes["total"] / global_bytes_acked_sum
-                string = "%s & %s & %.0f\permil " % (pristr, altstr, improv)
+                string = r"%s & %s & %.0f\permil " % (pristr, altstr, improv)
                 string += "[%.0f, %.0f, %.0f] " % (
                     1000
                     * prop2bytes["shorter_wo_prepend"]
@@ -140,39 +145,75 @@ DUMP_HEADERS = [
 ]
 
 
-def dump_ci_diff(row, primary, alternate, outfd):
-    Qs = median_diff_ci(primary, alternate)
-    string = "%d %d %d %s %s %f %f %f\n" % (
-        int(row.client_is_ipv6),
-        row.bytes_acked_sum,
-        int(primary.csv_rt_num != alternate.csv_rt_num),
-        primary.peer_type,
-        alternate.peer_type,
-        Qs[0],
-        Qs[1],
-        Qs[2],
-    )
-    outfd.write(string.encode("utf-8"))
+def dump_ci_diffs(row, rttfd, hdrfd):
+    primary, bestalt = row.get_primary_bestalt_minrtt(CONFIG["minrtt_min_samples"])
+    if primary is not None:
+        bestalt = primary if bestalt is None else bestalt
+        for improv in MINRTT_IMPROV_PEER_TRACKERS:
+            improv.update(row, primary, bestalt)
+        Qs = csvhelp.rtt_median_diff_ci(primary, bestalt)
+        string = "%d %d %d %s %s %f %f %f\n" % (
+            int(row.client_is_ipv6),
+            row.bytes_acked_sum,
+            int(primary.csv_rt_num != bestalt.csv_rt_num),
+            primary.peer_type,
+            bestalt.peer_type,
+            Qs[0],
+            Qs[1],
+            Qs[2],
+        )
+        rttfd.write(string.encode("utf-8"))
+
+    primary, bestalt = row.get_primary_bestalt_hdratio(CONFIG["hdratio_min_samples"])
+    if primary is not None:
+        bestalt = primary if bestalt is None else bestalt
+        for improv in HDRATIO_IMPROV_PEER_TRACKERS:
+            improv.update(row, primary, bestalt)
+        Qs = csvhelp.hdr_mean_diff_ci(primary, bestalt)
+        string = "%d %d %d %s %s %f %f %f\n" % (
+            int(row.client_is_ipv6),
+            row.bytes_acked_sum,
+            int(primary.csv_rt_num != bestalt.csv_rt_num),
+            primary.peer_type,
+            bestalt.peer_type,
+            Qs[0],
+            Qs[1],
+            Qs[2],
+        )
+        hdrfd.write(string.encode("utf-8"))
 
 
-IMPROV_PEER_TRACKERS = [
+MINRTT_IMPROV_PEER_TRACKERS = [
     ImprovementTracker(
         "med minrtt diff ci lower bound > 0ms",
-        lambda r, pri, alt: median_diff_ci(pri, alt)[0] > 0,
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 0
     ),
     ImprovementTracker(
-        "med minrtt diff > 5 ms",
-        lambda r, pri, alt: median_diff_ci(pri, alt)[1] > 5,
+        "med minrtt diff ci lower bound > 5 ms",
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 5
     ),
     ImprovementTracker(
-        "med minrtt diff > 5ms and ci lower bound > 0ms",
-        lambda r, pri, alt: median_diff_ci(pri, alt)[0] > 0
-        and median_diff_ci(pri, alt)[1] > 5,
+        "med minrtt diff ci lower bound > 10 ms",
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 10
+    ),
+]
+
+HDRATIO_IMPROV_PEER_TRACKERS = [
+    ImprovementTracker(
+        "mean hdratio diff ci lower bound > 0",
+        lambda r, pri, alt: csvhelp.hdr_mean_diff_ci(pri, alt)[0] > 0.0,
+    ),
+    ImprovementTracker(
+        "mean hdratio diff ci lower bound > 0.05",
+        lambda r, pri, alt: csvhelp.hdr_mean_diff_ci(pri, alt)[0] > 0.05,
+    ),
+    ImprovementTracker(
+        "mean hdratio diff ci lower bound > 0.1",
+        lambda r, pri, alt: csvhelp.hdr_mean_diff_ci(pri, alt)[0] > 0.1
     ),
 ]
 
 global_bytes_acked_sum = 0
-
 
 def main():
     logging.basicConfig(
@@ -181,7 +222,8 @@ def main():
     logging.info("starting up")
 
     global global_bytes_acked_sum
-    outfd = gzip.open("output/bestalt-vs-pri.csv.gz", "w")
+    rttfd = gzip.open("output/bestalt-vs-pri-rtt.csv.gz", "w")
+    hdrfd = gzip.open("output/bestalt-vs-pri-hdr.csv.gz", "w")
     reader = csv.DictReader(sys.stdin, delimiter="\t")
     nrows = 0
 
@@ -191,23 +233,20 @@ def main():
             row = Row(csvrow)
         except RowParseError:
             continue
-        global_bytes_acked_sum += row.bytes_acked_sum
-        primary = row.primary_route()
-        if primary is None:
-            continue
-        bestalt = row.best_alternate_route()
-        if bestalt is None:
-            bestalt = primary
-        dump_ci_diff(row, primary, bestalt, outfd)
+        global_bytes_acked_sum += row.bytes_acked_sum  # pylint: disable=E1101
+        dump_ci_diffs(row, rttfd, hdrfd)
 
-        for improv in IMPROV_PEER_TRACKERS:
-            improv.update(row, primary, bestalt)
+    sys.stdout.write("% MINRTT\n")
+    for improv in MINRTT_IMPROV_PEER_TRACKERS:
+        improv.dump_latex_string(sys.stdout)
 
-    for improv in IMPROV_PEER_TRACKERS:
+    sys.stdout.write("% HDRATIO\n")
+    for improv in MINRTT_IMPROV_PEER_TRACKERS:
         improv.dump_latex_string(sys.stdout)
 
     logging.info("processed %d rows", nrows)
-    outfd.close()
+    rttfd.close()
+    hdrfd.close()
 
 
 if __name__ == "__main__":

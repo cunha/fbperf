@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import math
 
 
 def _str_to_bool(string):
@@ -112,3 +113,25 @@ class RouteInfo:
         for fparser, flist in RouteInfo.FIELDS.items():
             for fname in flist:
                 setattr(self, fname, fparser(row[findex(fname)]))
+
+
+def rtt_median_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
+    med1 = pri.minrtt_ms_p50
+    med2 = alt.minrtt_ms_p50
+    var1 = pri.minrtt_ms_p50_var
+    var2 = alt.minrtt_ms_p50_var
+    md = med1 - med2
+    interval = z * math.sqrt(var1 + var2)
+    return (md - interval, md, md + interval)
+
+
+def hdr_mean_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
+    avg1 = pri.hdratio
+    avg2 = alt.hdratio
+    var1 = pri.hdratio_var
+    var2 = alt.hdratio_var
+    n1 = pri.hdratio_num_samples
+    n2 = alt.hdratio_num_samples
+    diff = avg1 - avg2
+    interval = z * math.sqrt(var1/n1 + var2/n2)
+    return (diff - interval, diff, diff + interval)
