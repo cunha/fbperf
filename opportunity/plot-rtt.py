@@ -25,20 +25,16 @@ def plot_cdfs(label2cdf, outfn):
     fig.tight_layout()
     for label, cdfs in label2cdf.items():
         xs, ys = zip(*cdfs[0])
-        ax1.plot(xs, ys, label=label)
+        ax1.step(xs, ys, label=label, where='post')
         xslo, yslo = zip(*cdfs[1])
         xsup, ysup = zip(*cdfs[2])
-        xslonorm = list()
         xsupnorm = list()
-        for y in ys:
-            i = bisect.bisect(yslo, y)
-            i = min(i, len(xslo)-1)
-            xslonorm.append(xslo[i])
-            i = bisect.bisect(ysup, y)
+        for y in yslo:
+            i = bisect.bisect_right(ysup, y)
             i = min(i, len(xsup)-1)
             xsupnorm.append(xsup[i])
         ax1.fill_betweenx(
-            ys, xslonorm, xsupnorm, color="#333333", alpha=0.4, linewidth=0
+            yslo, xslo, xsupnorm, color="#333333", alpha=0.4, linewidth=0
         )
     plt.legend(loc="best")
     plt.grid()

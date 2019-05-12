@@ -123,16 +123,6 @@ PROPERTY_FUNCTIONS = [
 ]
 
 
-def median_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
-    med1 = pri.minrtt_ms_p50
-    med2 = alt.minrtt_ms_p50
-    var1 = pri.minrtt_ms_p50_var
-    var2 = alt.minrtt_ms_p50_var
-    md = med1 - med2
-    interval = z * math.sqrt(var1 + var2)
-    return (md - interval, md, md + interval)
-
-
 DUMP_HEADERS = [
     "is_v6",
     "bytes_acked_sum",
