@@ -80,8 +80,8 @@ class Row:
         for i in range(Row.MAX_ROUTE_NUM + 1):
             if row["r%d_num_samples" % i] == "NULL":
                 continue
-            if row["r%d_hdratio" % i] == "NULL":
-                continue
+            # if row["r%d_hdratio" % i] == "NULL":
+            #     continue
             num2rtinfo[i] = RouteInfo(i, row)
         return num2rtinfo
 
@@ -112,6 +112,8 @@ class RouteInfo:
         findex = lambda fname: "r%d_%s" % (self.csv_rt_num, fname)
         for fparser, flist in RouteInfo.FIELDS.items():
             for fname in flist:
+                if row[findex(fname)] == 'NULL':
+                    row[findex(fname)] = '0.0'
                 setattr(self, fname, fparser(row[findex(fname)]))
 
 
