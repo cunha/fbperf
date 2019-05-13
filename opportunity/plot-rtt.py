@@ -23,10 +23,20 @@ def plot_cdfs(label2cdf, outfn):
     ax1.tick_params(axis="both", which="major", labelsize=14)
     ax1.set_xlim(-20, +20)
     ax1.set_ylim(0, 1)
-    ax1.annotate("Alternate\nis better", xy=(19, 0.85), fontsize=14,
-            horizontalalignment="right", backgroundcolor="white")
-    ax1.annotate("Primary\nis better", xy=(-19, 0.25), fontsize=14,
-            horizontalalignment="left", backgroundcolor="white")
+    ax1.annotate(
+        "Alternate\nis better",
+        xy=(19, 0.85),
+        fontsize=14,
+        horizontalalignment="right",
+        backgroundcolor="white",
+    )
+    ax1.annotate(
+        "Preferred\nis better",
+        xy=(-19, 0.25),
+        fontsize=14,
+        horizontalalignment="left",
+        backgroundcolor="white",
+    )
     fig.tight_layout()
     for label, cdfs in label2cdf.items():
         xs, ys = zip(*cdfs[0])
