@@ -246,12 +246,12 @@ class PrevalenceTracker:
         key2summary = dict((key, PrevalenceTracker.Summary(t2s, improvfunc)) for key, t2s in self.key2time2rttstats.items())
         # import pdb
         # pdb.set_trace()
-        # dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_rtt"])
+        dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_rtt"])
         classify_summaries(outdir, key2summary, CONFIG["min_number_of_bins_per_day_rtt"])
 
     def dump_cdfs_hdratio(self, outdir, improvfunc):
         key2summary = dict((key, PrevalenceTracker.Summary(t2s, improvfunc)) for key, t2s in self.key2time2hdrstats.items())
-        # dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_hdr"])
+        dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_hdr"])
         classify_summaries(outdir, key2summary, CONFIG["min_number_of_bins_per_day_hdr"])
 
 
@@ -287,6 +287,8 @@ class ClassificationStats:
         self.total_bytes += summary.global_stats.total_bytes
 
     def dump(self, total_bytes, total_valid_bytes, total_improv_bytes, fn):
+        dirname = os.path.split(fn)[0]
+        os.makedirs(dirname, exist_ok=True)
         with open(fn, "w") as fd:
             fd.write("global_bytes %d\n" % total_bytes)
             f = total_valid_bytes / total_bytes
