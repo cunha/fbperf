@@ -4,7 +4,6 @@ import bisect
 from collections import defaultdict
 import csv
 import gzip
-import ipaddress
 import json
 import logging
 import os
@@ -26,11 +25,15 @@ CONFIG = {
         # Update 20190507.1442: Brandon found that most of the traffic is
         # concentrated in prefixes that have enough samples for most bins
         # (expected), so we require that prefixes have 80 (15-min) bins (20h).
-        'min_number_of_bins_per_day': 72,
+        'min_number_of_bins_per_day_rtt': 72,
+
+        # We still require 200 samples for HD-ratio, but allow more bins to be
+        # missing to compensate for the reduced number of samples:
+        'min_number_of_bins_per_day_hdr': 48,
 
         # Minimum number of samples required; we do not need this for MinRTT
         # because Brandon only exports if we have enough MinRTT samples.
-        'hdratio_min_samples': 100,
+        'hdratio_min_samples': 200,
         'minrtt_min_samples': 200,
 
         # For some of the analysis we want to filter for prefixes where
@@ -210,6 +213,8 @@ class PrevalenceTracker:
                     CONFIG["bin_duration_secs"])
             days_with_event = len(list(ds for ds in self.day2stats.values()
                     if ds.max_streak >= event_bins))
+            days_without_event = len(list(ds for ds in self.day2stats.values()
+                    if ds.bins - ds.bins_improv > event_bins))
             days = len(self.day2stats)
             sys.stdout.write('%d %d %d %d %d %s %s\n' % (
                     self.global_stats.bins_improv,
@@ -218,9 +223,11 @@ class PrevalenceTracker:
                     days_with_event,
                     days,
                     key[0], str(key[1])))
+            # if days_with_improv == 1 and days_with_event == 1:
             if days_with_improv == 1 and days_with_event == 1:
                 return "one-off"
-            if days_with_improv == days and days_with_event == days:
+            if days_with_improv == days and days_with_event == days and \
+                    days_without_event == days:
                 return "diurnal"
             return "unknown"
 
@@ -247,22 +254,22 @@ class PrevalenceTracker:
         )
         # import pdb
         # pdb.set_trace()
-        # dump_cdfs_key2sum(outdir, key2summary)
-        classify_summaries(outdir, key2summary)
+        # dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_rtt"])
+        classify_summaries(outdir, key2summary, CONFIG["min_number_of_bins_per_day_rtt"])
 
     def dump_cdfs_hdratio(self, outdir, improvfunc):
         key2summary = dict(
             (key, PrevalenceTracker.Summary(t2s, improvfunc))
             for key, t2s in self.key2time2hdrstats.items()
         )
-        # dump_cdfs_key2sum(outdir, key2summary)
-        classify_summaries(outdir, key2summary)
+        # dump_cdfs_key2sum(outdir, key2summary, CONFIG["min_number_of_bins_per_day_hdr"])
+        classify_summaries(outdir, key2summary, CONFIG["min_number_of_bins_per_day_hdr"])
 
 
-def dump_cdfs_key2sum(outdir, key2sum):
+def dump_cdfs_key2sum(outdir, key2sum, bins_per_day):
     summaries = list(key2sum.values())
     summaries = list(s.global_stats for s in summaries
-            if s.has_enough_bins_per_day(CONFIG['min_number_of_bins_per_day']))
+            if s.has_enough_bins_per_day(bins_per_day))
     out_subdir = os.path.join(outdir, 'min_number_of_bins')
     dump_cdfs_sum(out_subdir, summaries)
 
@@ -305,7 +312,7 @@ class ClassificationStats:
                 fd.write("%s %s %d\n" % (vip_metro, str(bgp_ip_prefix), kbytes))
 
 
-def classify_summaries(outdir, key2sum):
+def classify_summaries(outdir, key2sum, bins_per_day):
     cls2stats = defaultdict(ClassificationStats)
     total_bytes = 0
     total_valid_bytes = 0
@@ -315,7 +322,7 @@ def classify_summaries(outdir, key2sum):
         total_improv_bytes += s.global_stats.total_bytes_improv
         # if not s.has_enough_bins_per_day(CONFIG["min_number_of_bins_per_day"]):
         #     continue
-        if not s.has_enough_days(CONFIG["min_number_of_bins_per_day"],
+        if not s.has_enough_days(bins_per_day,
                 CONFIG["classify_min_number_of_days"]):
             continue
         total_valid_bytes += s.global_stats.total_bytes

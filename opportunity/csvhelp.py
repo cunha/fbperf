@@ -68,7 +68,7 @@ class Row:
     def get_primary_bestalt_hdratio(self, samples):
         vf = lambda x: x.hdratio_num_samples >= samples
         primary = self.primary_route(vf)
-        vf = lambda x: x.apm_route_num > 1 and x.hdratio_num_samples > samples
+        vf = lambda x: x.apm_route_num > 1 and x.hdratio_num_samples >= samples
         bestalt = self.best_route("hdratio", max, vf)
         if bestalt is None:
             bestalt = primary
