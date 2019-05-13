@@ -20,15 +20,15 @@ PEER_SUBTYPE_MAP = {
     "private": "private",
     "": "",
     "public": "public",
-    "paid": "private",
+    "paid": "public",
     "route_server": "public",
     "mixed": "private",
 }
 
 PEER_TYPE_ORDER = [
     ("peering", "private"),
-    ("transit", ""),
     ("peering", "public"),
+    ("transit", ""),
 ]
 
 # This gets applied after SUBTYPE_MAP above, so the mixed subtype has been
