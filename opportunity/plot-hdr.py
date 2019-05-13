@@ -23,6 +23,10 @@ def plot_cdfs(label2cdf, outfn):
     ax1.tick_params(axis="both", which="major", labelsize=14)
     ax1.set_xlim(-0.2, +0.2)
     ax1.set_ylim(0, 1)
+    ax1.annotate("Alternate\nis better", xy=(0.19, 0.85), fontsize=14,
+            horizontalalignment="right", backgroundcolor="white")
+    ax1.annotate("Primary\nis better", xy=(-0.19, 0.25), fontsize=14,
+            horizontalalignment="left", backgroundcolor="white")
     fig.tight_layout()
     for label, cdfs in label2cdf.items():
         xs, ys = zip(*cdfs[0])
@@ -53,7 +57,7 @@ def main():
     median_ci_lb = read_cdf(sys.argv[2])
     median_ci_ub = read_cdf(sys.argv[3])
     label2cdf = dict()
-    label2cdf["Best Alternate - Preferred"] = (
+    label2cdf["Best Alternate − Preferred"] = (
         median_diff_cdf,
         median_ci_lb,
         median_ci_ub,
