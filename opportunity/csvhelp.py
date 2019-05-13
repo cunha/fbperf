@@ -132,6 +132,6 @@ def hdr_mean_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
     var2 = alt.hdratio_var
     n1 = pri.hdratio_num_samples
     n2 = alt.hdratio_num_samples
-    diff = avg1 - avg2
-    interval = z * math.sqrt(var1/n1 + var2/n2)
+    diff = avg2 - avg1
+    interval = z * math.sqrt(var1 / n1 + var2 / n2)
     return (diff - interval, diff, diff + interval)

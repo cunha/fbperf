@@ -20,6 +20,7 @@ def plot_cdfs(label2cdf, outfn):
     fig, ax1 = plt.subplots()
     ax1.set_xlabel("HD-Ratio Difference", fontsize=16)
     ax1.set_ylabel("Cumulative Fraction Traffic", fontsize=16)
+    ax1.tick_params(axis="both", which="major", labelsize=14)
     ax1.set_xlim(-0.2, +0.2)
     ax1.set_ylim(0, 1)
     fig.tight_layout()
@@ -32,15 +33,15 @@ def plot_cdfs(label2cdf, outfn):
         xsupnorm = list()
         for y in ys:
             i = bisect.bisect(yslo, y)
-            i = min(i, len(xslo)-1)
+            i = min(i, len(xslo) - 1)
             xslonorm.append(xslo[i])
             i = bisect.bisect(ysup, y)
-            i = min(i, len(xsup)-1)
+            i = min(i, len(xsup) - 1)
             xsupnorm.append(xsup[i])
         ax1.fill_betweenx(
             ys, xslonorm, xsupnorm, color="#333333", alpha=0.4, linewidth=0
         )
-    plt.legend(loc="best")
+    plt.legend(loc="best", fontsize=14)
     plt.grid()
     plt.savefig(outfn, bbox_inches="tight")
     plt.close(fig)
@@ -52,7 +53,7 @@ def main():
     median_ci_lb = read_cdf(sys.argv[2])
     median_ci_ub = read_cdf(sys.argv[3])
     label2cdf = dict()
-    label2cdf["Primary - Best Alternate"] = (
+    label2cdf["Best Alternate - Preferred"] = (
         median_diff_cdf,
         median_ci_lb,
         median_ci_ub,

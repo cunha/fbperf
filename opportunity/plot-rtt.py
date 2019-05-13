@@ -20,23 +20,24 @@ def plot_cdfs(label2cdf, outfn):
     fig, ax1 = plt.subplots()
     ax1.set_xlabel("MinRTT Difference [ms]", fontsize=16)
     ax1.set_ylabel("Cumulative Fraction Traffic", fontsize=16)
+    ax1.tick_params(axis="both", which="major", labelsize=14)
     ax1.set_xlim(-25, +25)
     ax1.set_ylim(0, 1)
     fig.tight_layout()
     for label, cdfs in label2cdf.items():
         xs, ys = zip(*cdfs[0])
-        ax1.step(xs, ys, label=label, where='post')
+        ax1.step(xs, ys, label=label, where="post")
         xslo, yslo = zip(*cdfs[1])
         xsup, ysup = zip(*cdfs[2])
         xsupnorm = list()
         for y in yslo:
             i = bisect.bisect_right(ysup, y)
-            i = min(i, len(xsup)-1)
+            i = min(i, len(xsup) - 1)
             xsupnorm.append(xsup[i])
         ax1.fill_betweenx(
             yslo, xslo, xsupnorm, color="#333333", alpha=0.4, linewidth=0
         )
-    plt.legend(loc="best")
+    plt.legend(loc="best", fontsize=14)
     plt.grid()
     plt.savefig(outfn, bbox_inches="tight")
     plt.close(fig)
@@ -48,7 +49,7 @@ def main():
     median_ci_lb = read_cdf(sys.argv[2])
     median_ci_ub = read_cdf(sys.argv[3])
     label2cdf = dict()
-    label2cdf["Primary - Best Alternate"] = (
+    label2cdf["Preferred - Best Alternate"] = (
         median_diff_cdf,
         median_ci_lb,
         median_ci_ub,
