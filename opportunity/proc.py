@@ -16,8 +16,8 @@ CONFIG = {"minrtt_min_samples": 200, "hdratio_min_samples": 200}
 PEER_SUBTYPE_MAP = {
     "private": "private",
     "": "",
+    "paid": "paid",
     "public": "public",
-    "paid": "public",
     "route_server": "public",
     "mixed": "private",
 }
@@ -25,6 +25,7 @@ PEER_SUBTYPE_MAP = {
 PEER_TYPE_ORDER = [
     ("peering", "private"),
     ("peering", "public"),
+    ("peering", "paid"),
     ("transit", ""),
 ]
 
