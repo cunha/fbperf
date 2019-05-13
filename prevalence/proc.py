@@ -51,6 +51,7 @@ CONFIG = {
     "classify_continuous_min_frac_improv": 0.8,
     "classify_event_duration": 3600 * 2,
     "classify_min_number_of_days": 2,
+    "classify_multiple_days_cnt": 2,
 }
 
 global_bytes_acked_sum = 0
@@ -316,7 +317,7 @@ def classify_summaries(outdir, key2sum, bins_per_day):
         if not s.has_enough_days(bins_per_day, CONFIG["classify_min_number_of_days"]):
             continue
         total_valid_bytes += s.global_stats.total_bytes
-        cls, data = s.classify(k)
+        cls, data = s.classify()
         cls2stats[cls].update(k, s, data)
 
     for cls, cstats in cls2stats.items():
