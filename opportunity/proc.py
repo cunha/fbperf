@@ -121,8 +121,8 @@ class ImprovementTracker:
 
     @staticmethod
     def prop_has_more_prepend(pri, alt):
-        priprep = pri.bgp_as_path_min_len_prepending_removed - pri.bgp_as_path_len
-        altprep = alt.bgp_as_path_min_len_prepending_removed - alt.bgp_as_path_len
+        priprep = pri.bgp_as_path_len - pri.bgp_as_path_min_len_prepending_removed
+        altprep = alt.bgp_as_path_len - alt.bgp_as_path_min_len_prepending_removed
         if priprep < altprep:
             return "alt_is_prepended_more"
         else:
