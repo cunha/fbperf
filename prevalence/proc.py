@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
+import bisect
 from collections import defaultdict
 import csv
+import gzip
+import ipaddress
 import json
 import logging
 import os
@@ -23,7 +26,7 @@ CONFIG = {
         # Update 20190507.1442: Brandon found that most of the traffic is
         # concentrated in prefixes that have enough samples for most bins
         # (expected), so we require that prefixes have 80 (15-min) bins (20h).
-        'min_number_of_bins': 80,
+        'min_number_of_bins_per_day': 72,
 
         # Minimum number of samples required; we do not need this for MinRTT
         # because Brandon only exports if we have enough MinRTT samples.
@@ -45,13 +48,62 @@ CONFIG = {
         # size of each limited by shift_period_max_measurement_gap_in_bins;
         # gaps with more bins terminate a shift period.
         'deprecated_shift_period_max_measurement_gap_in_bins': 2,
+
+        # This is used to split the time series into days by finding the valley
+        # with the least amount of samples.
+        "daybreak_num_bins_in_valley": 7200//900,
+        "classify_continuous_min_frac_improv": 0.8,
+        "classify_event_duration": 3600*2,
+        "classify_min_number_of_days": 2,
 }
 
 global_bytes_acked_sum = 0
 
 
+def find_lowest_valley_midpoint(seq, itemfunc, valley_width_cnt):
+    minidx = -1
+    minavg = float("inf")
+    nbins = valley_width_cnt
+    for i in range(len(seq) - nbins):
+        avg = sum(itemfunc(v) for v in seq[i:i+nbins]) / nbins
+        if avg < minavg:
+            minidx = i
+            minavg = avg
+    return minidx + nbins//2
+
+
+def compute_day_breakpoint_indexes(seq, breakidx, bin_duration):
+    breakidxs = list()
+    assert ((24 * 3600) % bin_duration) == 0
+    bpd = 24 * 3600 // bin_duration  # bins per day
+    c = breakidx % bpd
+    while c + bpd < len(seq):
+        breakidxs.append(c)
+        c += bpd
+    return breakidxs
+
+
 class NotEnoughSamplesError(ValueError):
     pass
+
+
+class SummaryStats:
+    def __init__(self):
+        self.bins = 0
+        self.bins_improv = 0
+        self.total_bytes = 0
+        self.total_bytes_improv = 0
+        self.num_shifts = 0
+        self.max_streak = 0
+        self.curr_streak = 0
+    def update_improv(self, nbins, total_bytes):
+        self.bins_improv += nbins
+        self.total_bytes_improv += total_bytes * nbins
+        self.curr_streak += nbins
+        self.max_streak = max(self.max_streak, self.curr_streak)
+    def update_totals(self, seq):
+        self.bins = len(seq)
+        self.total_bytes = sum(s.bytes_acked_sum for s in seq)
 
 
 class PrevalenceTracker:
@@ -60,6 +112,8 @@ class PrevalenceTracker:
             self.bytes_acked_sum = row.bytes_acked_sum
             primary, bestalt = row.get_primary_bestalt_minrtt(CONFIG['minrtt_min_samples'])
             if primary is None:
+                raise NotEnoughSamplesError()
+            if primary == bestalt:
                 raise NotEnoughSamplesError()
             self.pri_type = primary.peer_type
             self.pri_subtype = primary.peer_subtype
@@ -73,6 +127,8 @@ class PrevalenceTracker:
             primary, bestalt = row.get_primary_bestalt_hdratio(CONFIG['hdratio_min_samples'])
             if primary is None:
                 raise NotEnoughSamplesError()
+            if primary == bestalt:
+                raise NotEnoughSamplesError()
             self.pri_type = primary.peer_type
             self.pri_subtype = primary.peer_subtype
             self.alt_type = bestalt.peer_type
@@ -83,23 +139,27 @@ class PrevalenceTracker:
         def __init__(self, time2stats, improvfunc):
             def get_nbins(tstamp1, tstamp2):
                 return (tstamp2 - tstamp1) // CONFIG['bin_duration_secs']
+            def get_nsamples(stats):
+                return stats.bytes_acked_sum
 
             series = sorted(time2stats.items())
             times, stats = zip(*series)
 
-            self.bins = len(series)
-            self.bins_improv = 0
-            self.total_bytes = sum(s.bytes_acked_sum for s in stats)
-            self.total_bytes_improv = 0
-            self.num_shifts = 0
+            breakidx = find_lowest_valley_midpoint(stats, get_nsamples, CONFIG["daybreak_num_bins_in_valley"])
+            breakidxs = compute_day_breakpoint_indexes(stats, breakidx, CONFIG["bin_duration_secs"])
 
-            max_streak, curr_streak = 0, 0
+            gs = SummaryStats()
+            gs.bins = len(stats)
+            gs.total_bytes = sum(s.bytes_acked_sum for s in stats)
+            self.global_stats = gs
+
+            self.day2stats = defaultdict(SummaryStats)
+
             is_moved = False
-
-            # w = sys.stdout.write
-            # w("################################\n")
             for i, s in enumerate(stats):
                 nbins = 1 if i == 0 else get_nbins(times[i - 1], times[i])
+                day = bisect.bisect(breakidxs, i)
+                ds = self.day2stats[day]
 
                 # We may want to change the code if nbins is large. We
                 # currently do nothing special because we only consider
@@ -108,37 +168,61 @@ class PrevalenceTracker:
 
                 should_move = improvfunc(s)
                 if should_move == -1:
-                    max_streak = max(max_streak, curr_streak)
-                    curr_streak = 0
+                    gs.curr_streak = 0
+                    ds.curr_streak = 0
                     is_moved = False
                 elif should_move == 0:
                     if is_moved:
-                        self.bins_improv += nbins
-                        # We multiply the amount of bytes by nbins:
-                        self.total_bytes_improv += s.bytes_acked_sum*nbins
-                        curr_streak += nbins
+                        gs.update_improv(nbins, s.bytes_acked_sum)
+                        ds.update_improv(nbins, s.bytes_acked_sum)
                 elif should_move == 1:
                     if not is_moved:
-                        self.num_shifts += 1
+                        gs.num_shifts += 1
+                        ds.num_shifts += 1
                         nbins = 1
-                    self.bins_improv += nbins
-                    self.total_bytes_improv += s.bytes_acked_sum*nbins
-                    curr_streak += nbins
+                    gs.update_improv(nbins, s.bytes_acked_sum)
+                    ds.update_improv(nbins, s.bytes_acked_sum)
                     is_moved = True
-                # w(
-                #     "%d %d %d %d %d %d\n"
-                #     % (
-                #         times[i],
-                #         int(should_move),
-                #         self.bins_improv,
-                #         self.total_bytes_improv,
-                #         max_streak,
-                #         curr_streak,
-                #     )
-                # )
 
-            max_streak = max(max_streak, curr_streak)
-            self.longest_shifted_bin_streak = max_streak
+            # Drop first and last days, they may be incomplete:
+            self.day2stats.pop(0, None)
+            self.day2stats.pop(len(breakidxs), None)
+            for dnum, dstats in self.day2stats.items():
+                seq = stats[breakidxs[dnum-1]:breakidxs[dnum]]
+                dstats.update_totals(seq)
+
+        def has_enough_bins_per_day(self, min_bins):
+            if not self.day2stats:
+                return False
+            return min(ds.bins >= min_bins for ds in self.day2stats.values())
+
+        def has_enough_days(self, min_bins, days):
+            return len(list(ds for ds in self.day2stats.values()
+                    if ds.bins > min_bins)) >= days
+
+        def classify(self, key):
+            if self.global_stats.bins_improv >= (self.global_stats.bins *
+                    CONFIG["classify_continuous_min_frac_improv"]):
+                return "continuous"
+            days_with_improv = len(list(ds for ds in self.day2stats.values()
+                    if ds.bins_improv > 0))
+            event_bins = (CONFIG["classify_event_duration"] //
+                    CONFIG["bin_duration_secs"])
+            days_with_event = len(list(ds for ds in self.day2stats.values()
+                    if ds.max_streak >= event_bins))
+            days = len(self.day2stats)
+            sys.stdout.write('%d %d %d %d %d %s %s\n' % (
+                    self.global_stats.bins_improv,
+                    self.global_stats.bins,
+                    days_with_improv,
+                    days_with_event,
+                    days,
+                    key[0], str(key[1])))
+            if days_with_improv == 1 and days_with_event == 1:
+                return "one-off"
+            if days_with_improv == days and days_with_event == days:
+                return "diurnal"
+            return "unknown"
 
     def __init__(self):
         self.key2time2rttstats = defaultdict(dict)
@@ -161,20 +245,24 @@ class PrevalenceTracker:
             (key, PrevalenceTracker.Summary(t2s, improvfunc))
             for key, t2s in self.key2time2rttstats.items()
         )
-        dump_cdfs_key2sum(outdir, key2summary)
+        # import pdb
+        # pdb.set_trace()
+        # dump_cdfs_key2sum(outdir, key2summary)
+        classify_summaries(outdir, key2summary)
 
     def dump_cdfs_hdratio(self, outdir, improvfunc):
         key2summary = dict(
             (key, PrevalenceTracker.Summary(t2s, improvfunc))
             for key, t2s in self.key2time2hdrstats.items()
         )
-        dump_cdfs_key2sum(outdir, key2summary)
+        # dump_cdfs_key2sum(outdir, key2summary)
+        classify_summaries(outdir, key2summary)
 
 
 def dump_cdfs_key2sum(outdir, key2sum):
     summaries = list(key2sum.values())
-    summaries = list(s for s in summaries
-            if s.bins > CONFIG['min_number_of_bins'])
+    summaries = list(s.global_stats for s in summaries
+            if s.has_enough_bins_per_day(CONFIG['min_number_of_bins_per_day']))
     out_subdir = os.path.join(outdir, 'min_number_of_bins')
     dump_cdfs_sum(out_subdir, summaries)
 
@@ -187,15 +275,56 @@ def dump_cdfs_key2sum(outdir, key2sum):
     ratio = total / global_bytes_acked_sum
     total_sig = sum(s.total_bytes for s in summaries_sig)
     ratio_sig = total_sig / global_bytes_acked_sum
+    sys.stdout.write('outdir: %s\n' % outdir)
+    sys.stdout.write('total traffic: %d %f\n' % (total, ratio))
+    sys.stdout.write('total traffic in prefixes with significant improvement: %d %f\n' % (total_sig, ratio_sig))
 
-    continuous_improv_prefixes = list(k for k, s in key2sum.items()
-            if s.bins > CONFIG['min_number_of_bins'] and
-            s.bins_improv == s.bins)
-    outfn = os.path.join(outdir, 'continuous-improv-prefixes.data')
-    dump_keys(continuous_improv_prefixes, outfn)
 
-    sys.stdout.write('total traffic %d %f\n' % (total, ratio))
-    sys.stdout.write('total traffic in prefixes with significant improvement %d %f\n' % (total_sig, ratio_sig))
+class ClassificationStats:
+    def __init__(self):
+        self.key2bytes = dict()
+        self.improv_bytes = 0
+        self.total_bytes = 0
+    def update(self, key, summary):
+        self.key2bytes[key] = summary.global_stats.total_bytes
+        self.improv_bytes += summary.global_stats.total_bytes_improv
+        self.total_bytes += summary.global_stats.total_bytes
+    def dump(self, total_bytes, total_valid_bytes, total_improv_bytes, fn):
+        with open(fn, "w") as fd:
+            fd.write("global_bytes %d\n" % total_bytes)
+            f = total_valid_bytes / total_bytes
+            fd.write("global_valid_bytes %d %f\n" % (total_valid_bytes, f))
+            f = total_improv_bytes / total_bytes
+            fd.write("global_improv_bytes %d %f\n" % (total_improv_bytes, f))
+            f = self.total_bytes / total_bytes
+            fd.write("class_total_bytes %d %f\n" % (self.total_bytes, f))
+            f = self.improv_bytes / total_bytes
+            fd.write("class_improv_bytes %d %f\n" % (self.improv_bytes, f))
+            for key, kbytes in self.key2bytes.items():
+                vip_metro, bgp_ip_prefix = key
+                fd.write("%s %s %d\n" % (vip_metro, str(bgp_ip_prefix), kbytes))
+
+
+def classify_summaries(outdir, key2sum):
+    cls2stats = defaultdict(ClassificationStats)
+    total_bytes = 0
+    total_valid_bytes = 0
+    total_improv_bytes = 0
+    for k, s in key2sum.items():
+        total_bytes += s.global_stats.total_bytes
+        total_improv_bytes += s.global_stats.total_bytes_improv
+        # if not s.has_enough_bins_per_day(CONFIG["min_number_of_bins_per_day"]):
+        #     continue
+        if not s.has_enough_days(CONFIG["min_number_of_bins_per_day"],
+                CONFIG["classify_min_number_of_days"]):
+            continue
+        total_valid_bytes += s.global_stats.total_bytes
+        cls = s.classify(k)
+        cls2stats[cls].update(k, s)
+
+    for cls, cstats in cls2stats.items():
+        outfn = os.path.join(outdir, "%s.data" % cls)
+        cstats.dump(total_bytes, total_valid_bytes, total_improv_bytes, outfn)
 
 
 def make_default_weight_iterator(seq):
@@ -263,18 +392,12 @@ def dump_cdfs_sum(outdir, summaries):
     with open(outfn, "w") as fd:
         dumpcdf(xs, ys, fd)
 
-    data = sorted(s.longest_shifted_bin_streak / s.bins_improv
+    data = sorted(s.max_streak / s.bins_improv
             for s in summaries if s.bins_improv > 0)
     xs, ys = zip(*buildcdf(make_default_weight_iterator(data)))
     outfn = os.path.join(outdir, "frac-improved-bins-in-longest-streak.cdf")
     with open(outfn, "w") as fd:
         dumpcdf(xs, ys, fd)
-
-
-def dump_keys(keys, outfn):
-    with open(outfn, 'w') as fd:
-        for vip_metro, bgp_ip_prefix in keys:
-            fd.write("%s %s\n" % (vip_metro, str(bgp_ip_prefix)))
 
 
 def dumpcdf(xs, ys, fd):
@@ -320,16 +443,22 @@ def main():
     tracker = PrevalenceTracker()
     global global_bytes_acked_sum
     global_bytes_acked_sum = 0
-    reader = csv.DictReader(sys.stdin, delimiter="\t")
+    fd = gzip.open(sys.argv[1], "rt")
+    reader = csv.DictReader(fd, delimiter="\t")
     nrows = 0
+    row_parse_errors_cnt = 0
 
     for csvrow in reader:
         nrows += 1
         try:
             row = Row(csvrow)
         except RowParseError:
+            row_parse_errors_cnt += 1
             continue
         global_bytes_acked_sum += row.bytes_acked_sum  # pylint: disable=E1101
+        # if row.key() == ('mrs', ipaddress.ip_network('105.144.0.0/16')):
+        #     import pdb
+        #     pdb.set_trace()
         tracker.update(row)
 
     NAME2FUNC = {
@@ -337,6 +466,7 @@ def main():
             "sticky": make_sticky,
     }
     logging.info("processed %d rows", nrows)
+    logging.info("row_parse_errors %d", row_parse_errors_cnt)
 
     for name, func in NAME2FUNC.items():
         for limit in [0, 5, 10]:
