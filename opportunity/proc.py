@@ -76,23 +76,26 @@ class ImprovementTracker:
                 if altstr.endswith("/"):
                     altstr = altstr[:-1]
                 improv = 1000 * prop2bytes["total"] / global_bytes_acked_sum
-                string = r"%s & %s & %.0f\permil " % (pristr, altstr, improv)
-                string += "[%.0f, %.0f, %.0f] " % (
-                    1000
-                    * prop2bytes["shorter_wo_prepend"]
-                    / global_bytes_acked_sum,
-                    1000
-                    * prop2bytes["equal_wo_prepend"]
-                    / global_bytes_acked_sum,
-                    1000
-                    * prop2bytes["longer_wo_prepend"]
-                    / global_bytes_acked_sum,
-                )
-                string += "[%.0f, %.0f, %.0f] " % (
-                    1000 * prop2bytes["shorter"] / global_bytes_acked_sum,
-                    1000 * prop2bytes["equal"] / global_bytes_acked_sum,
-                    1000 * prop2bytes["longer"] / global_bytes_acked_sum,
-                )
+                longer = 1000 * prop2bytes["longer"] / global_bytes_acked_sum
+                prepended = 1000 * prop2bytes["alt_is_prepended_more"] / global_bytes_acked_sum
+                string = r"%s & %s & %.0f\permil & %.0f\permil & %.0f\permil" % (
+                        pristr, altstr, improv, longer, prepended)
+                # string += "[%.0f, %.0f, %.0f] " % (
+                #     1000
+                #     * prop2bytes["shorter_wo_prepend"]
+                #     / global_bytes_acked_sum,
+                #     1000
+                #     * prop2bytes["equal_wo_prepend"]
+                #     / global_bytes_acked_sum,
+                #     1000
+                #     * prop2bytes["longer_wo_prepend"]
+                #     / global_bytes_acked_sum,
+                # )
+                # string += "[%.0f, %.0f, %.0f] " % (
+                #     1000 * prop2bytes["shorter"] / global_bytes_acked_sum,
+                #     1000 * prop2bytes["equal"] / global_bytes_acked_sum,
+                #     1000 * prop2bytes["longer"] / global_bytes_acked_sum,
+                # )
                 string += "\\\\\n"
                 stream.write(string)
 
@@ -116,10 +119,20 @@ class ImprovementTracker:
             return "equal_wo_prepend"
         return "shorter_wo_prepend"
 
+    @staticmethod
+    def prop_has_more_prepend(pri, alt):
+        priprep = pri.bgp_as_path_min_len_prepending_removed - pri.bgp_as_path_len
+        altprep = alt.bgp_as_path_min_len_prepending_removed - alt.bgp_as_path_len
+        if priprep < altprep:
+            return "alt_is_prepended_more"
+        else:
+            return "alt_is_not_prepended_more"
+
 
 PROPERTY_FUNCTIONS = [
     ImprovementTracker.prop_length,
     ImprovementTracker.prop_length_wo_prepend,
+    ImprovementTracker.prop_has_more_prepend,
 ]
 
 
@@ -231,7 +244,7 @@ def main():
         improv.dump_latex_string(sys.stdout)
 
     sys.stdout.write("% HDRATIO\n")
-    for improv in MINRTT_IMPROV_PEER_TRACKERS:
+    for improv in HDRATIO_IMPROV_PEER_TRACKERS:
         improv.dump_latex_string(sys.stdout)
 
     logging.info("processed %d rows", nrows)
