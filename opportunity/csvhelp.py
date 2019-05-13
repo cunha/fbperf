@@ -39,19 +39,14 @@ class Row:
             return None
         return rtinfo
 
-    def best_route(
-        self, metric="minrtt_ms_p50", aggfunc=min, validfunc=lambda x: True
-    ):
+    def best_route(self, metric="minrtt_ms_p50", aggfunc=min, validfunc=lambda x: True):
         best_rti = None
         best_metric = None
         for rti in self.num2rtinfo.values():
             if not validfunc(rti):
                 continue
             rti_metric = getattr(rti, metric)
-            if (
-                best_metric is None
-                or aggfunc(rti_metric, best_metric) != best_metric
-            ):
+            if best_metric is None or aggfunc(rti_metric, best_metric) != best_metric:
                 best_rti = rti
                 best_metric = rti_metric
         return best_rti
@@ -66,9 +61,9 @@ class Row:
         return (primary, bestalt)
 
     def get_primary_bestalt_hdratio(self, samples):
-        vf = lambda x: x.hdratio_num_samples >= samples
+        vf = lambda x: x.hdratio_num_samples >= samples and x.hdratio is not None
         primary = self.primary_route(vf)
-        vf = lambda x: x.apm_route_num > 1 and x.hdratio_num_samples >= samples
+        vf = lambda x: x.apm_route_num > 1 and x.hdratio_num_samples >= samples and x.hdratio is not None
         bestalt = self.best_route("hdratio", max, vf)
         if bestalt is None:
             bestalt = primary
@@ -112,9 +107,10 @@ class RouteInfo:
         findex = lambda fname: "r%d_%s" % (self.csv_rt_num, fname)
         for fparser, flist in RouteInfo.FIELDS.items():
             for fname in flist:
-                if row[findex(fname)] == 'NULL':
-                    row[findex(fname)] = '0.0'
-                setattr(self, fname, fparser(row[findex(fname)]))
+                if row[findex(fname)] == "NULL":
+                    setattr(self, fname, None)
+                else:
+                    setattr(self, fname, fparser(row[findex(fname)]))
 
 
 def rtt_median_diff_ci(pri: RouteInfo, alt: RouteInfo, z=2) -> (int, int, int):
