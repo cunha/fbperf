@@ -11,10 +11,7 @@ from typing import Callable
 from csvhelp import Row, RouteInfo, RowParseError
 import csvhelp
 
-CONFIG = {
-        "minrtt_min_samples": 200,
-        "hdratio_min_samples": 200,
-}
+CONFIG = {"minrtt_min_samples": 200, "hdratio_min_samples": 200}
 
 PEER_SUBTYPE_MAP = {
     "private": "private",
@@ -77,26 +74,31 @@ class ImprovementTracker:
                     altstr = altstr[:-1]
                 improv = 1000 * prop2bytes["total"] / global_bytes_acked_sum
                 longer = 1000 * prop2bytes["longer"] / global_bytes_acked_sum
-                prepended = 1000 * prop2bytes["alt_is_prepended_more"] / global_bytes_acked_sum
-                string = r"%s & %s & %.0f\permil & %.0f\permil & %.0f\permil" % (
-                        pristr, altstr, improv, longer, prepended)
-                # string += "[%.0f, %.0f, %.0f] " % (
-                #     1000
-                #     * prop2bytes["shorter_wo_prepend"]
-                #     / global_bytes_acked_sum,
-                #     1000
-                #     * prop2bytes["equal_wo_prepend"]
-                #     / global_bytes_acked_sum,
-                #     1000
-                #     * prop2bytes["longer_wo_prepend"]
-                #     / global_bytes_acked_sum,
-                # )
-                # string += "[%.0f, %.0f, %.0f] " % (
-                #     1000 * prop2bytes["shorter"] / global_bytes_acked_sum,
-                #     1000 * prop2bytes["equal"] / global_bytes_acked_sum,
-                #     1000 * prop2bytes["longer"] / global_bytes_acked_sum,
-                # )
+                prepended = (
+                    1000
+                    * prop2bytes["alt_is_prepended_more"]
+                    / global_bytes_acked_sum
+                )
+                string = (
+                    r"%s & %s & %.2f\permil & %.2f\permil & %.2f\permil"
+                    % (pristr, altstr, improv, longer, prepended)
+                )
                 string += "\\\\\n"
+                stream.write(string)
+                string = "%% %.2f, %.2f, %.2f, %.2f, %.2f, %.2f\n" % (
+                    1000
+                    * prop2bytes["shorter_wo_prepend"]
+                    / global_bytes_acked_sum,
+                    1000
+                    * prop2bytes["equal_wo_prepend"]
+                    / global_bytes_acked_sum,
+                    1000
+                    * prop2bytes["longer_wo_prepend"]
+                    / global_bytes_acked_sum,
+                    1000 * prop2bytes["shorter"] / global_bytes_acked_sum,
+                    1000 * prop2bytes["equal"] / global_bytes_acked_sum,
+                    1000 * prop2bytes["longer"] / global_bytes_acked_sum,
+                )
                 stream.write(string)
 
     @staticmethod
@@ -121,8 +123,12 @@ class ImprovementTracker:
 
     @staticmethod
     def prop_has_more_prepend(pri, alt):
-        priprep = pri.bgp_as_path_len - pri.bgp_as_path_min_len_prepending_removed
-        altprep = alt.bgp_as_path_len - alt.bgp_as_path_min_len_prepending_removed
+        priprep = (
+            pri.bgp_as_path_len - pri.bgp_as_path_min_len_prepending_removed
+        )
+        altprep = (
+            alt.bgp_as_path_len - alt.bgp_as_path_min_len_prepending_removed
+        )
         if priprep < altprep:
             return "alt_is_prepended_more"
         else:
@@ -149,7 +155,9 @@ DUMP_HEADERS = [
 
 
 def dump_ci_diffs(row, rttfd, hdrfd):
-    primary, bestalt = row.get_primary_bestalt_minrtt(CONFIG["minrtt_min_samples"])
+    primary, bestalt = row.get_primary_bestalt_minrtt(
+        CONFIG["minrtt_min_samples"]
+    )
     if primary is not None:
         bestalt = primary if bestalt is None else bestalt
         for improv in MINRTT_IMPROV_PEER_TRACKERS:
@@ -167,7 +175,9 @@ def dump_ci_diffs(row, rttfd, hdrfd):
         )
         rttfd.write(string.encode("utf-8"))
 
-    primary, bestalt = row.get_primary_bestalt_hdratio(CONFIG["hdratio_min_samples"])
+    primary, bestalt = row.get_primary_bestalt_hdratio(
+        CONFIG["hdratio_min_samples"]
+    )
     if primary is not None:
         bestalt = primary if bestalt is None else bestalt
         for improv in HDRATIO_IMPROV_PEER_TRACKERS:
@@ -189,15 +199,15 @@ def dump_ci_diffs(row, rttfd, hdrfd):
 MINRTT_IMPROV_PEER_TRACKERS = [
     ImprovementTracker(
         "med minrtt diff ci lower bound > 0ms",
-        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 0
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 0,
     ),
     ImprovementTracker(
         "med minrtt diff ci lower bound > 5 ms",
-        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 5
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 5,
     ),
     ImprovementTracker(
         "med minrtt diff ci lower bound > 10 ms",
-        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 10
+        lambda r, pri, alt: csvhelp.rtt_median_diff_ci(pri, alt)[0] > 10,
     ),
 ]
 
@@ -212,11 +222,12 @@ HDRATIO_IMPROV_PEER_TRACKERS = [
     ),
     ImprovementTracker(
         "mean hdratio diff ci lower bound > 0.1",
-        lambda r, pri, alt: csvhelp.hdr_mean_diff_ci(pri, alt)[0] > 0.1
+        lambda r, pri, alt: csvhelp.hdr_mean_diff_ci(pri, alt)[0] > 0.1,
     ),
 ]
 
 global_bytes_acked_sum = 0
+
 
 def main():
     logging.basicConfig(
