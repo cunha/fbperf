@@ -2,9 +2,11 @@
 set -eu
 
 OUTDIR=output/
-# INPUT=/home/cunha/Dropbox/shared/SIGCOMM-2019-Daiquery/imc2019/daiquery_383373092256903.csv.gz
-INPUT=/home/cunha/Dropbox/shared/SIGCOMM-2019-Daiquery/imc2019/0510/daiquery_326322991366217.csv.gz
 INPUT=$(pwd)/tests/test.csv.gz
+# This is the HDRatio dump:
+INPUT=/home/cunha/Dropbox/shared/SIGCOMM-2019-Daiquery/imc2019/0510/daiquery_326322991366217.csv.gz
+# This lacks HDRatio but has minrtt_p50_ms_var as floats (leads to better graphs):
+# INPUT=/home/cunha/Dropbox/shared/SIGCOMM-2019-Daiquery/imc2019/daiquery_383373092256903.csv.gz
 
 make_cdf () {
     local filter=$1
@@ -12,16 +14,19 @@ make_cdf () {
     echo "[$prefix] [$filter]"
     for metric in rtt hdr ; do
         zcat $OUTDIR/bestalt-vs-pri-$metric.csv.gz | tail -n +2 \
-                | $filter | tee $prefix-$metric.txt \
+                | $filter \
                 | awk '{print $7,$2;}' \
+                | tee $prefix-$metric.txt \
                 | sort -g -t " " -k 1 | buildcdf > $prefix-$metric.cdf
         zcat $OUTDIR/bestalt-vs-pri-$metric.csv.gz | tail -n +2 \
-                | $filter | tee $prefix-$metric-lb.txt \
+                | $filter \
                 | awk '{print $6,$2;}' \
+                | tee $prefix-$metric-lb.txt \
                 | sort -g -t " " -k 1 | buildcdf > $prefix-$metric-lb.cdf
         zcat $OUTDIR/bestalt-vs-pri-$metric.csv.gz | tail -n +2 \
-                | $filter | tee $prefix-$metric-ub.txt \
+                | $filter \
                 | awk '{print $8,$2;}' \
+                | tee $prefix-$metric-ub.txt \
                 | sort -g -t " " -k 1 | buildcdf > $prefix-$metric-ub.cdf
     done
 }
