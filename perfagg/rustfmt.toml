@@ -1,0 +1,3 @@
+# max_width = 100
+# indent_style = "Block"
+use_small_heuristics = "Off"
