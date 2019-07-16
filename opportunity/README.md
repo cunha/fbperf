@@ -15,4 +15,3 @@ Also, if an alternate route is missing (e.g., the second most
 preferred), we *will* continue processing the other alternate routes and
 include compare the primary against any alternate route with enough
 samples.
-

@@ -4,11 +4,9 @@ from collections import defaultdict
 import csv
 import gzip
 import logging
-import math
 import sys
 from typing import Callable
 
-from csvhelp import Row, RouteInfo, RowParseError
 import csvhelp
 
 CONFIG = {"minrtt_min_samples": 200, "hdratio_min_samples": 200}

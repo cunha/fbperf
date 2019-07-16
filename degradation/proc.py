@@ -8,7 +8,7 @@ import math
 import sys
 from typing import Callable
 
-from csvhelp import Row, RouteInfo, RowParseError
+from csvhelp import TimeBin, RouteInfo, RowParseError
 import csvhelp
 
 CONFIG = {
@@ -40,7 +40,7 @@ class ImprovementTracker:
     def __init__(
         self,
         description: str,
-        validfunc: Callable[[Row, RouteInfo, RouteInfo], bool],
+        validfunc: Callable[[TimeBin, RouteInfo, RouteInfo], bool],
     ):
         self.pri2alt2prop2bytes = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: 0))
@@ -233,7 +233,7 @@ def main():
     for csvrow in reader:
         nrows += 1
         try:
-            row = Row(csvrow)
+            row = TimeBin(csvrow)
         except RowParseError:
             continue
         global_bytes_acked_sum += row.bytes_acked_sum  # pylint: disable=E1101
