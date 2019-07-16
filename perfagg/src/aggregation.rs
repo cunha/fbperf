@@ -1,8 +1,11 @@
 extern crate ipnet;
+extern crate treebitmap;
 
 use std::collections::HashSet;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use ipnet::IpNet;
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use treebitmap::IpLookupTable;
 
 /// Aggregate a set of prefixes into a set of less specific prefixes.
 ///
@@ -73,6 +76,52 @@ pub fn aggregate_prefixes(
     aggregated
 }
 
+fn noncovered_insert<T>(addr: T, pfxlen: u32, trie: &mut IpLookupTable<T, bool>)
+where
+    T: treebitmap::address::Address,
+{
+    match trie.longest_match(addr) {
+        None => {
+            trie.insert(addr, pfxlen, true);
+        }
+        Some((prev, len, _)) => {
+            debug_assert!(pfxlen != len);
+            if len > pfxlen {
+                return;
+            }
+            trie.remove(prev, len);
+            debug_assert!(trie.longest_match(addr).is_none());
+            trie.insert(addr, pfxlen, true);
+        }
+    };
+}
+
+pub fn noncovered_prefixes<'a, I>(prefixes: I) -> HashSet<IpNet>
+where
+    I: Iterator<Item = &'a IpNet>,
+{
+    let mut trie4: IpLookupTable<Ipv4Addr, bool> = IpLookupTable::new();
+    let mut trie6: IpLookupTable<Ipv6Addr, bool> = IpLookupTable::new();
+    for prefix in prefixes {
+        match prefix {
+            IpNet::V4(v4net) => {
+                noncovered_insert(v4net.addr(), u32::from(v4net.prefix_len()), &mut trie4)
+            }
+            IpNet::V6(v6net) => {
+                noncovered_insert(v6net.addr(), u32::from(v6net.prefix_len()), &mut trie6)
+            }
+        }
+    }
+    let mut noncovered: HashSet<IpNet> = trie4
+        .iter()
+        .map(|(addr, len, _)| IpNet::from(Ipv4Net::new(addr, len as u8).unwrap()))
+        .collect();
+    noncovered.extend(
+        trie6.iter().map(|(addr, len, _)| IpNet::from(Ipv6Net::new(addr, len as u8).unwrap())),
+    );
+    noncovered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_slash22s() {
+    fn agg_full_slash22s() {
         let agg_slash22s = &|n1: &IpNet, n2: &IpNet| n1.prefix_len() > 22 && n2.prefix_len() > 22;
 
         let mut input: HashSet<IpNet>;
@@ -102,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partial_slash22s() {
+    fn agg_partial_slash22s() {
         let agg_slash22s = &|n1: &IpNet, n2: &IpNet| n1.prefix_len() > 22 && n2.prefix_len() > 22;
 
         let mut input: HashSet<IpNet>;
@@ -121,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gaps() {
+    fn agg_gaps() {
         let mut input: HashSet<IpNet>;
         let mut output: HashSet<IpNet>;
         let mut blacklist: HashSet<IpNet>;
@@ -168,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge() {
+    fn agg_merge() {
         let mut input: HashSet<IpNet>;
         let mut output: HashSet<IpNet>;
         let mut blacklist: HashSet<IpNet>;
@@ -202,5 +251,60 @@ mod tests {
         output =
             mkset(&["10.0.0.0/23", "10.0.2.0/24", "10.0.3.0/24", "10.0.8.0/21", "10.0.16.0/20"]);
         assert_eq!(aggregate_prefixes(&input, agg_merge), output);
+    }
+
+    #[test]
+    fn cov_same_len() {
+        let input: HashSet<IpNet> = mkset(&[
+            "10.0.0.0/24",
+            "10.0.2.0/24",
+            "10.0.3.0/24",
+            "10.0.0.0/23",
+            "10.0.2.0/23",
+            "10.0.0.0/22",
+        ]);
+        let output: HashSet<IpNet> = mkset(&["10.0.0.0/24", "10.0.2.0/24", "10.0.3.0/24"]);;
+        assert_eq!(noncovered_prefixes(input.iter()), output);
+    }
+
+    #[test]
+    fn cov_diff_len() {
+        let mut input: HashSet<IpNet> = mkset(&[
+            "10.0.0.0/21",
+            "10.0.0.0/22",
+            "10.0.0.0/23",
+            "10.0.0.0/24",
+            "10.0.2.0/23",
+            "10.0.2.0/24",
+            "10.0.3.0/24",
+            "10.0.4.0/22",
+            "10.0.12.0/22",
+        ]);
+        let mut output: HashSet<IpNet> =
+            mkset(&["10.0.0.0/24", "10.0.2.0/24", "10.0.3.0/24", "10.0.4.0/22", "10.0.12.0/22"]);
+        assert_eq!(noncovered_prefixes(input.iter()), output);
+
+        input = mkset(&[
+            "10.0.0.0/21",
+            "10.0.0.0/22",
+            "10.0.0.0/23",
+            "10.0.0.0/24",
+            "10.0.2.0/23",
+            "10.0.2.0/24",
+            "10.0.3.0/24",
+            "10.0.4.0/22",
+            "10.0.5.0/24",
+            "10.0.6.0/23",
+            "10.0.12.0/22",
+        ]);
+        output = mkset(&[
+            "10.0.0.0/24",
+            "10.0.2.0/24",
+            "10.0.3.0/24",
+            "10.0.5.0/24",
+            "10.0.6.0/23",
+            "10.0.12.0/22",
+        ]);
+        assert_eq!(noncovered_prefixes(input.iter()), output);
     }
 }

@@ -13,7 +13,7 @@ use structopt::StructOpt;
 mod aggregation;
 mod inout;
 mod timeseries;
-use aggregation::aggregate_prefixes;
+use aggregation::{aggregate_prefixes, noncovered_prefixes};
 use inout::{dump_output, load_input, RouteInfo};
 use timeseries::TimeSeries;
 
@@ -87,7 +87,7 @@ fn compare_prefixes(
     let opt1: Option<&PrefixData> = prefix2data.get(pfx1);
     let opt2: Option<&PrefixData> = prefix2data.get(pfx2);
     match (opt1, opt2) {
-        (None, None) => false,
+        (None, None) => panic!("Should't happen."),
         (Some(data1), None) => data1.is_deaggregated(),
         (None, Some(data2)) => data2.is_deaggregated(),
         (Some(data1), Some(data2)) => {
@@ -98,32 +98,32 @@ fn compare_prefixes(
             }
         }
     }
-
 }
 
-fn max_routable_prefix_length(prefix: &IpNet) -> u8 {
-    match prefix {
-        IpNet::V4(_) => 24,
-        IpNet::V6(_) => 48,
-    }
-}
+// fn max_routable_prefix_length(prefix: &IpNet) -> u8 {
+//     match prefix {
+//         IpNet::V4(_) => 24,
+//         IpNet::V6(_) => 48,
+//     }
+// }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opts = Opt::from_args();
 
-    let prefix2data: HashMap<IpNet, PrefixData> = load_input(&opts.input);
+    let asn2prefix2data: HashMap<u32, HashMap<IpNet, PrefixData>> = load_input(&opts.input);
+    let mut asn2aggregated: HashMap<u32, HashSet<IpNet>> = HashMap::new();
 
-    let max_len_prefixes: HashSet<IpNet> = prefix2data
-        .keys()
-        .filter(|p| p.prefix_len() == max_routable_prefix_length(p))
-        .cloned()
-        .collect();
+    for (asn, prefix2data) in asn2prefix2data.iter() {
+        let noncovered: HashSet<IpNet> = noncovered_prefixes(prefix2data.keys());
+        asn2aggregated.insert(
+            *asn,
+            aggregate_prefixes(&noncovered, &|net1: &IpNet, net2: &IpNet| {
+                compare_prefixes(net1, net2, &prefix2data, &opts)
+            }),
+        );
+    }
 
-    let aggregated = aggregate_prefixes(&max_len_prefixes, &|net1: &IpNet, net2: &IpNet| {
-        compare_prefixes(net1, net2, &prefix2data, &opts)
-    });
-
-    dump_output(&prefix2data, &aggregated, &opts.output);
+    dump_output(&asn2prefix2data, &asn2aggregated, &opts.output);
 
     Ok(())
 }

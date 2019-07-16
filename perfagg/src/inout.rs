@@ -37,6 +37,7 @@ impl Timed for RouteInfo {
 
 #[derive(Debug, Serialize)]
 struct PrefixOutputStats {
+    origin_asn: u32,
     prefix: IpNet,
     bgp_prefix: IpNet,
     prefix_traffic: u64,
@@ -44,10 +45,15 @@ struct PrefixOutputStats {
 }
 
 impl PrefixOutputStats {
-    fn new(prefix: &IpNet, prefix2data: &HashMap<IpNet, PrefixData>) -> PrefixOutputStats {
-        let data = prefix2data.get(prefix).unwrap();
-        let bgp_prefix_data = prefix2data.get(&data.bgp_prefix).unwrap();
+    fn new(
+        asn: u32,
+        prefix: &IpNet,
+        asn2prefix2data: &HashMap<u32, HashMap<IpNet, PrefixData>>,
+    ) -> PrefixOutputStats {
+        let data = asn2prefix2data.get(&asn).unwrap().get(prefix).unwrap();
+        let bgp_prefix_data = asn2prefix2data.get(&asn).unwrap().get(&data.bgp_prefix).unwrap();
         PrefixOutputStats {
+            origin_asn: asn,
             prefix: *prefix,
             bgp_prefix: data.bgp_prefix,
             prefix_traffic: data.total_traffic,
@@ -56,59 +62,61 @@ impl PrefixOutputStats {
     }
 }
 
-pub(super) fn load_input(infn: &PathBuf) -> HashMap<IpNet, PrefixData> {
-    let mut prefix2data: HashMap<IpNet, PrefixData> = HashMap::new();
+pub(super) fn load_input(infn: &PathBuf) -> HashMap<u32, HashMap<IpNet, PrefixData>> {
+    let mut asn2prefix2data: HashMap<u32, HashMap<IpNet, PrefixData>> = HashMap::new();
     let mut rdr = csv::Reader::from_path(infn).unwrap();
     for result in rdr.deserialize() {
         let rtinfo: RouteInfo = result.unwrap();
+        let prefix2data = asn2prefix2data.entry(rtinfo.origin_asn).or_insert_with(HashMap::new);
         let pfxdata: &mut PrefixData =
             prefix2data.entry(rtinfo.prefix).or_insert_with(|| PrefixData::new(&rtinfo));
         pfxdata.timeseries.insert(rtinfo).unwrap();
     }
-    prefix2data
+    asn2prefix2data
 }
 
 pub(super) fn dump_output(
-    prefix2data: &HashMap<IpNet, PrefixData>,
-    aggregated: &HashSet<IpNet>,
+    asn2prefix2data: &HashMap<u32, HashMap<IpNet, PrefixData>>,
+    asn2aggregated: &HashMap<u32, HashSet<IpNet>>,
     outfn: &PathBuf,
 ) {
     let mut writer = csv::Writer::from_path(outfn).unwrap();
 
-    let mut traffic_total: u64 = 0;
     let mut traffic_kept: u64 = 0;
     let mut traffic_merged: u64 = 0;
     let mut traffic_deagg: u64 = 0;
-    let mut prefixes_kept: HashSet<IpNet> = HashSet::new();
-    let mut prefixes_merged: HashSet<IpNet> = HashSet::new();
-    let mut prefixes_deagg: HashSet<IpNet> = HashSet::new();
+    let mut asnpfx_kept: HashSet<(u32, IpNet)> = HashSet::new();
+    let mut asnpfx_merged: HashSet<(u32, IpNet)> = HashSet::new();
+    let mut asnpfx_deagg: HashSet<(u32, IpNet)> = HashSet::new();
 
-    for prefix in aggregated {
-        let rec = PrefixOutputStats::new(prefix, prefix2data);
-        traffic_total += rec.prefix_traffic;
-        if rec.prefix != rec.bgp_prefix {
-            if rec.prefix.contains(&rec.bgp_prefix) {
-                traffic_merged += rec.prefix_traffic;
-                prefixes_merged.insert(rec.prefix);
+    for (asn, aggregated) in asn2aggregated {
+        for prefix in aggregated {
+            let rec = PrefixOutputStats::new(*asn, prefix, asn2prefix2data);
+            if rec.prefix != rec.bgp_prefix {
+                if rec.prefix.contains(&rec.bgp_prefix) {
+                    traffic_merged += rec.prefix_traffic;
+                    asnpfx_merged.insert((*asn, rec.prefix));
+                } else {
+                    debug_assert!(rec.bgp_prefix.contains(&rec.prefix));
+                    traffic_deagg += rec.prefix_traffic;
+                    asnpfx_deagg.insert((*asn, rec.prefix));
+                }
             } else {
-                debug_assert!(rec.bgp_prefix.contains(&rec.prefix));
-                traffic_deagg += rec.prefix_traffic;
-                prefixes_deagg.insert(rec.prefix);
+                traffic_kept += rec.prefix_traffic;
+                asnpfx_kept.insert((*asn, rec.prefix));
             }
-        } else {
-            traffic_kept += rec.prefix_traffic;
-            prefixes_kept.insert(rec.prefix);
+            writer.serialize(rec).unwrap();
         }
-        writer.serialize(rec).unwrap();
     }
 
-    println!("original prefixes:");
-    println!("  kept: {}", prefixes_kept.len());
-    println!("  merged: {}", prefixes_merged.len());
-    println!("  deagg: {}", prefixes_deagg.len());
+    let traffic_total: f64 = (traffic_kept + traffic_merged + traffic_deagg) as f64;
+    println!("(asn, prefix) pairs:");
+    println!("  kept: {}", asnpfx_kept.len());
+    println!("  merged: {}", asnpfx_merged.len());
+    println!("  deagg: {}", asnpfx_deagg.len());
     println!("traffic:");
     println!("  total: {} 100.0", traffic_total);
-    println!("  kept: {} {}", traffic_kept, traffic_kept as f64 / traffic_total as f64);
-    println!("  merged: {} {}", traffic_merged, traffic_merged as f64 / traffic_total as f64);
-    println!("  deagg: {} {}", traffic_deagg, traffic_deagg as f64 / traffic_total as f64);
+    println!("  kept: {} {}", traffic_kept, traffic_kept as f64 / traffic_total);
+    println!("  merged: {} {}", traffic_merged, traffic_merged as f64 / traffic_total);
+    println!("  deagg: {} {}", traffic_deagg, traffic_deagg as f64 / traffic_total);
 }

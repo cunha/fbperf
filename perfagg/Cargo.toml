@@ -11,3 +11,4 @@ csv = ">=1"
 ipnet = { version = ">=2", features = ["serde"] }
 serde = { version = ">=1", features = ["derive"] }
 structopt = ">= 0.2"
+treebitmap = ">= 0.4"
