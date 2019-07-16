@@ -1,5 +1,5 @@
 import csvhelp
-import perf
+# import perf
 
 
 # bin_duration_secs
@@ -18,7 +18,7 @@ CONFIGS = [
         "routeinfo_validator": csvhelp.RouteInfo.MaxMinRttCiSizeValidator(3),
         "timebin_compare_routes": csvhelp.RouteInfo.compare_median_minrtt,
         "timebin_perf_diff_ci": csvhelp.RouteInfo.minrtt_median_diff_ci,
-        "timebin_perf_diff_shift": perf.TimeBinStats.CiLowerBoundShiftChecker(5),
+        # "timebin_perf_diff_shift": perf.TimeBinStats.CiLowerBoundShiftChecker(5),
         "bin_duration_secs": 900,
         "min_frac_bins_per_day": 0.8,
     }
