@@ -1,15 +1,13 @@
-use crate::PrefixData;
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use crate::timeseries::Timed;
+use crate::timeseries::{TimeSeries, Timed};
 
 #[derive(Debug, Deserialize)]
-pub(super) struct RouteInfo {
+pub struct RouteInfo {
     #[serde(rename = "time")]
     pub time: u64,
     // This can be a list of prefixes in the CSV file; reasons include (i) path changes during the
@@ -26,7 +24,7 @@ pub(super) struct RouteInfo {
     #[serde(rename = "min_rtt_p50")]
     pub lat50: i32,
     #[serde(rename = "hdratio")]
-    pub hdratio: f64,
+    pub hdratio: f32,
 }
 
 impl Timed for RouteInfo {
@@ -62,7 +60,7 @@ impl PrefixOutputStats {
     }
 }
 
-pub(super) fn load_input(infn: &PathBuf) -> HashMap<u32, HashMap<IpNet, PrefixData>> {
+pub fn load_input(infn: &PathBuf) -> HashMap<u32, HashMap<IpNet, PrefixData>> {
     let mut asn2prefix2data: HashMap<u32, HashMap<IpNet, PrefixData>> = HashMap::new();
     let mut rdr = csv::Reader::from_path(infn).unwrap();
     for result in rdr.deserialize() {
@@ -75,7 +73,7 @@ pub(super) fn load_input(infn: &PathBuf) -> HashMap<u32, HashMap<IpNet, PrefixDa
     asn2prefix2data
 }
 
-pub(super) fn dump_output(
+pub fn dump_output(
     asn2prefix2data: &HashMap<u32, HashMap<IpNet, PrefixData>>,
     asn2aggregated: &HashMap<u32, HashSet<IpNet>>,
     outfn: &PathBuf,
@@ -119,4 +117,44 @@ pub(super) fn dump_output(
     println!("  kept: {} {}", traffic_kept, traffic_kept as f64 / traffic_total);
     println!("  merged: {} {}", traffic_merged, traffic_merged as f64 / traffic_total);
     println!("  deagg: {} {}", traffic_deagg, traffic_deagg as f64 / traffic_total);
+}
+
+pub struct PrefixData {
+    pub prefix: IpNet,
+    pub bgp_prefix: IpNet,
+    pub origin_asn: u32,
+    pub timeseries: TimeSeries<RouteInfo>,
+    pub total_traffic: u64,
+}
+
+impl PrefixData {
+    pub fn new(init: &RouteInfo) -> PrefixData {
+        PrefixData {
+            prefix: init.prefix,
+            bgp_prefix: init.bgp_prefix,
+            origin_asn: init.origin_asn,
+            timeseries: TimeSeries::new(),
+            total_traffic: 0,
+        }
+    }
+    pub fn is_deaggregated(&self) -> bool {
+        self.bgp_prefix.contains(&self.prefix)
+    }
+    pub fn equivalent_performance(&self, other: &PrefixData, max_lat50_diff: i32, max_hdratio_diff: f32) -> bool {
+        for (time, route1) in self.timeseries.iter() {
+            let route2 = match other.timeseries.get(*time) {
+                None => continue,
+                Some(route2) => route2,
+            };
+            let lat50_diff = (route1.lat50 - route2.lat50).abs();
+            if lat50_diff > max_lat50_diff {
+                return false;
+            }
+            let hdratio_diff = (route1.hdratio - route2.hdratio).abs();
+            if hdratio_diff > max_hdratio_diff {
+                return false;
+            }
+        }
+        true
+    }
 }

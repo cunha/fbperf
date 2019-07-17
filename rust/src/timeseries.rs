@@ -4,6 +4,7 @@ pub trait Timed {
     fn get_time(&self) -> i64;
 }
 
+#[derive(Default)]
 pub struct TimeSeries<T: Timed> {
     time2item: BTreeMap<i64, T>
 }

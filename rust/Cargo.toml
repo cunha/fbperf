@@ -1,5 +1,5 @@
 [package]
-name = "perfagg"
+name = "fbperf"
 version = "0.1.0"
 authors = ["Italo Cunha <cunha@dcc.ufmg.br>"]
 edition = "2018"
@@ -8,7 +8,12 @@ edition = "2018"
 
 [dependencies]
 csv = ">=1"
+env_logger = ">=0.6"
+flate2 = ">=1"
 ipnet = { version = ">=2", features = ["serde"] }
+log = ">=0.4"
+num-traits = ">=0.2"
+num-derive = ">=0.2"
 serde = { version = ">=1", features = ["derive"] }
 structopt = ">= 0.2"
 treebitmap = ">= 0.4"
