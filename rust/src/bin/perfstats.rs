@@ -2,8 +2,8 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use std::io::BufReader;
 use std::fs::File;
+use std::io::BufReader;
 
 use flate2::bufread::GzDecoder;
 use structopt::StructOpt;
@@ -19,7 +19,15 @@ use fbperf::perfdb::DB;
 struct Opt {
     #[structopt(parse(from_os_str))]
     /// The input CSV file
-    input: PathBuf
+    input: PathBuf,
+}
+
+
+
+
+
+struct PathPerformanceStats {
+
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -29,12 +37,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let f = File::open(opts.input)?;
     let filerdr = BufReader::new(f);
     let gzrdr = GzDecoder::new(filerdr);
-    let mut csvrdr = csv::ReaderBuilder::new()
-            .delimiter(b'\t')
-            .from_reader(gzrdr);
+    let mut csvrdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(gzrdr);
 
     let db = DB::from_csv_reader(&mut csvrdr);
-    dbg!(db.parsing_errors);
+    dbg!(db.rows, db.parsing_errors);
 
     Ok(())
 }
