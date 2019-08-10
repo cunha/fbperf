@@ -1,1 +1,1 @@
-# deny = ["implicit_hasher"]
+deny = ["implicit_hasher"]

@@ -9,11 +9,9 @@ edition = "2018"
 [dependencies]
 csv = ">=1"
 env_logger = ">=0.6"
-flate2 = ">=1"
+flate2 = { version = ">=1", features = ["tokio"] }
 ipnet = { version = ">=2", features = ["serde"] }
 log = ">=0.4"
-num-traits = ">=0.2"
-num-derive = ">=0.2"
 serde = { version = ">=1", features = ["derive"] }
 structopt = ">= 0.2"
 treebitmap = ">= 0.4"

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 
-use crate::timeseries::{TimeSeries, Timed};
+use crate::aggregation::timeseries::{TimeSeries, Timed};
 
 #[derive(Debug, Deserialize)]
 pub struct RouteInfo {

@@ -1,11 +1,13 @@
-extern crate ipnet;
-extern crate treebitmap;
+pub mod inout;
+pub mod timeseries;
 
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use treebitmap::IpLookupTable;
+
 
 /// Aggregate a set of prefixes into a set of less specific prefixes.
 ///
@@ -16,17 +18,19 @@ use treebitmap::IpLookupTable;
 /// # Examples
 ///
 /// ```
-/// input: HashSet<IpNet> = ["10.0.6.0/24", "10.0.7.0/24"]
+/// use std::collections::HashSet;
+/// use ipnet::IpNet;
+/// let input: HashSet<IpNet> = ["10.0.6.0/24", "10.0.7.0/24"]
 ///     .iter()
 ///     .map(|e| e.parse::<IpNet>().unwrap())
 ///     .collect();
-/// output: HashSet<IpNet> = ["10.0.4.0/22"]
+/// let output: HashSet<IpNet> = ["10.0.4.0/22"]
 ///     .iter()
 ///     .map(|e| e.parse::<IpNet>().unwrap())
 ///     .collect();
 /// let slash22s: &dyn Fn(&IpNet, &IpNet) -> bool =
-///         &|n1, n2| n1.prefix_len() > 22 && n2.prefix_len() > 22
-/// assert_eq!(aggregate_prefixes(&input, slash22s), output);
+///         &|n1, n2| n1.prefix_len() > 22 && n2.prefix_len() > 22;
+/// assert_eq!(fbperf::aggregation::aggregate_prefixes(&input, slash22s), output);
 /// ```
 pub fn aggregate_prefixes(
     start_prefixes: &HashSet<IpNet>,
@@ -76,32 +80,17 @@ pub fn aggregate_prefixes(
     aggregated
 }
 
-fn noncovered_insert<T>(addr: T, pfxlen: u32, trie: &mut IpLookupTable<T, bool>)
-where
-    T: treebitmap::address::Address,
-{
-    match trie.longest_match(addr) {
-        None => {
-            trie.insert(addr, pfxlen, true);
-        }
-        Some((prev, len, _)) => {
-            debug_assert!(pfxlen != len);
-            if len > pfxlen {
-                return;
-            }
-            trie.remove(prev, len);
-            debug_assert!(trie.longest_match(addr).is_none());
-            trie.insert(addr, pfxlen, true);
-        }
-    };
-}
-
 pub fn noncovered_prefixes<'a, I>(prefixes: I) -> HashSet<IpNet>
 where
     I: Iterator<Item = &'a IpNet>,
 {
     let mut trie4: IpLookupTable<Ipv4Addr, bool> = IpLookupTable::new();
     let mut trie6: IpLookupTable<Ipv6Addr, bool> = IpLookupTable::new();
+    /* We process the iterator `I` twice because we need to ensure prefixes are inserted
+     * in the trie from the least specific to the most specific. For example, consider the
+     * case when 10.0.5.0/23 is in the trie and 10.0.4.0/22 is added. The interface does
+     * not allow us to check if 10.0.5.0/23 is in the trie. An alternate approach would be
+     * to sort `I`, but this requires creating a list of all prefixes anyway. */
     for prefix in prefixes {
         match prefix {
             IpNet::V4(v4net) => {
@@ -112,15 +101,47 @@ where
             }
         }
     }
-    let mut noncovered: HashSet<IpNet> = trie4
+    let mut new4: IpLookupTable<Ipv4Addr, bool> = IpLookupTable::new();
+    let mut new6: IpLookupTable<Ipv6Addr, bool> = IpLookupTable::new();
+    for (addr, len, _) in trie4 {
+        noncovered_insert(addr, len, &mut new4);
+    }
+    for (addr, len, _) in trie6 {
+        noncovered_insert(addr, len, &mut new6);
+    }
+    let mut noncovered: HashSet<IpNet> = new4
         .iter()
         .map(|(addr, len, _)| IpNet::from(Ipv4Net::new(addr, len as u8).unwrap()))
         .collect();
     noncovered.extend(
-        trie6.iter().map(|(addr, len, _)| IpNet::from(Ipv6Net::new(addr, len as u8).unwrap())),
+        new6.iter().map(|(addr, len, _)| IpNet::from(Ipv6Net::new(addr, len as u8).unwrap())),
     );
     noncovered
 }
+
+fn noncovered_insert<T>(addr: T, pfxlen: u32, trie: &mut IpLookupTable<T, bool>)
+where
+    T: treebitmap::address::Address,
+    T: Display,
+{
+    loop {
+        match trie.longest_match(addr) {
+            None => {
+                trie.insert(addr, pfxlen, true);
+                break;
+            }
+            Some((prev, len, _)) => {
+                println!("adding {}/{}, parent {}/{}\n", addr, pfxlen, prev, len);
+                assert!(pfxlen != len);
+                if len > pfxlen {
+                    break;
+                }
+                trie.remove(prev, len);
+            }
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
