@@ -70,9 +70,12 @@ def main():
     key2cfg2cnt = defaultdict(lambda: defaultdict(lambda: Counter(correct=0, total=0)))
 
     # bwDiffKbps minRttMs initCwndPkts xferPkts ackDelayMs isValid tput1Ok tput2Ok
-    fmt = "{target:d} {bwdiff:d} {rttms:d} {initcwnd:d} {xferpkts:d} {ackdelay:d} {isvalid:b} {tput1:b} {tput2:b} {tputVanilla:b} {tputGeneric:b} {tputError:g} {tputGenericValid:b}"
+    fmt = "{target:d} {bwdiff:d} {rttms:d} {initcwnd:d} {xferpkts:d} {ackdelay:d} {ssthresh:d} {isvalid:b} {tput1:b} {tput2:b} {tputVanilla:b} {tputGeneric:b} {tputError:g} {tputGenericValid:b} {genericVsVanillaError:g}"
     for line in opts.input:
         record = parse.parse(fmt, line)
+        if record is None:
+            print(line)
+            sys.exit(1)
         if record["bwdiff"] == 0:
             continue
         if record["target"] != 2500:

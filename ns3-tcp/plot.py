@@ -55,7 +55,7 @@ def main():
     logging.getLogger("matplotlib").setLevel(logging.ERROR)
 
     label2cdf = OrderedDict()
-    for basename in ["all", "valid", "nodelay", "valid+nodelay"]:
+    for basename in ["all", "valid", "nodelay", "valid+nodelay", "nodelay+largecwnd"]:
         inputfn = "generic-estimator-error-%s.cdf" % basename
         label2cdf[basename] = read_cdf(inputfn)
 
