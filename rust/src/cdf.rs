@@ -2,7 +2,8 @@ use std::cmp::PartialOrd;
 use std::ops::Add;
 
 // Accepts D: PartialOrd for convenience; will panic if not Ord.
-pub fn build_cdf<D>(data: &mut Vec<(D, f32)>, step: f32) -> Vec<(D, f32)>
+// Will sort `data`, hence the `&mut`.
+pub fn build<D>(data: &mut Vec<(D, f32)>, step: f32) -> Vec<(D, f32)>
     where D: Copy + Default + PartialOrd,
 {
     if data.len == 0 {

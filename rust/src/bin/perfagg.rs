@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use ipnet::IpNet;
 use structopt::StructOpt;
 
+use fbperf::aggregation::inout::{dump_output, load_input, PrefixData};
 use fbperf::aggregation::{aggregate_prefixes, noncovered_prefixes};
-use fbperf::inout::{dump_output, load_input, PrefixData};
 
 #[derive(Debug, StructOpt)]
 #[structopt(

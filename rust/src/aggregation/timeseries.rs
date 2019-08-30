@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, btree_map};
+// This module isn't doing jack. Consider deprecating.
+
+use std::collections::{btree_map, BTreeMap};
 
 pub trait Timed {
     fn get_time(&self) -> i64;
@@ -6,7 +8,7 @@ pub trait Timed {
 
 #[derive(Default)]
 pub struct TimeSeries<T: Timed> {
-    time2item: BTreeMap<i64, T>
+    time2item: BTreeMap<i64, T>,
 }
 
 impl<T: Timed> TimeSeries<T> {
@@ -32,8 +34,7 @@ impl<T: Timed> TimeSeries<T> {
     }
 }
 
-impl<T: Timed> IntoIterator for TimeSeries<T>
-{
+impl<T: Timed> IntoIterator for TimeSeries<T> {
     type Item = (i64, T);
     type IntoIter = btree_map::IntoIter<i64, T>;
 

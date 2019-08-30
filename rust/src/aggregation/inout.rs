@@ -140,7 +140,12 @@ impl PrefixData {
     pub fn is_deaggregated(&self) -> bool {
         self.bgp_prefix.contains(&self.prefix)
     }
-    pub fn equivalent_performance(&self, other: &PrefixData, max_lat50_diff: i32, max_hdratio_diff: f32) -> bool {
+    pub fn equivalent_performance(
+        &self,
+        other: &PrefixData,
+        max_lat50_diff: i32,
+        max_hdratio_diff: f32,
+    ) -> bool {
         for (time, route1) in self.timeseries.iter() {
             let route2 = match other.timeseries.get(*time) {
                 None => continue,

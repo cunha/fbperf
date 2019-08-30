@@ -8,7 +8,6 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use treebitmap::IpLookupTable;
 
-
 /// Aggregate a set of prefixes into a set of less specific prefixes.
 ///
 /// `aggregate_prefixes` calls `can_aggregate` on each pair of sibling prefixes to check if
@@ -141,7 +140,6 @@ where
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
