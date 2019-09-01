@@ -105,6 +105,9 @@ impl DBSummary {
         let mut dbsum = DBSummary::default();
         for (pid, time2bin) in &db.pathid2time2bin {
             let psum = PathSummary::build(time2bin, summarizer, tempconfig);
+            if psum.valid_bytes == 0 {
+                continue;
+            }
             dbsum.valid_bytes += psum.valid_bytes;
             dbsum.behavior_valid_bytes[psum.temporal_behavior as usize] += psum.valid_bytes;
             dbsum.behavior_total_bytes[psum.temporal_behavior as usize] += db.pathid2traffic[pid];
@@ -204,18 +207,22 @@ impl DBSummary {
         let mut bw = io::BufWriter::new(file);
 
         let normalized_behaviors: [u64; TemporalBehavior::SIZE as usize] = [0, 1, 1, 1, 0, 0];
-        let total: u64 = self.behavior_total_bytes.iter().sum::<u64>();
+        let global: u64 = self.behavior_total_bytes.iter().sum::<u64>();
         let norm_total: u64 = self
             .behavior_total_bytes
             .iter()
             .enumerate()
             .fold(0u64, |acc, (i, v)| acc + normalized_behaviors[i] * (*v));
 
-        writeln!(bw, "behavior bytes perc norm")?;
+        writeln!(bw, "behavior valid total valid/total valid/global total/global norm")?;
         for (i, valid) in self.behavior_valid_bytes.iter().enumerate() {
             let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
-            let frac_valid: f32 = 100.0 * (*valid as f32) / (total as f32);
-            write!(bw, "{:?} {} {:0.2}%", behavior, valid, frac_valid)?;
+            let total: u64 = self.behavior_total_bytes[i];
+            write!(bw, "{:?} {} {}", behavior, valid, total)?;
+            let frac_valid_total: f32 = 100.0 * (*valid as f32) / (total as f32);
+            let frac_valid: f32 = 100.0 * (*valid as f32) / (global as f32);
+            let frac_total: f32 = 100.0 * (total as f32) / (global as f32);
+            write!(bw, " {:0.2} {:0.2} {:0.2}", frac_valid_total, frac_valid, frac_total)?;
             if normalized_behaviors[i] == 1 {
                 let norm_valid: f32 = 100.0 * (*valid as f32) / (norm_total as f32);
                 writeln!(bw, " {:0.2}%", norm_valid)?;
