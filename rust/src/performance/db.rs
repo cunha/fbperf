@@ -30,6 +30,7 @@ pub enum PeerType {
     Transit,
 }
 
+#[derive(Default)]
 pub struct DB {
     pub pathid2time2bin: HashMap<Rc<PathId>, BTreeMap<u64, TimeBin>>,
     pub pathid2traffic: HashMap<Rc<PathId>, u64>,
@@ -237,7 +238,7 @@ impl RouteInfo {
         (md, interval)
     }
 
-    pub fn hdratio_median_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
+    pub fn hdratio_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let diff: f32 = rt1.hdratio - rt2.hdratio;
         let var1: f32 = rt1.hdratio_var;
         let var2: f32 = rt2.hdratio_var;
@@ -251,7 +252,7 @@ impl RouteInfo {
         rt1.minrtt_ms_p50.cmp(&rt2.minrtt_ms_p50)
     }
 
-    pub fn compare_median_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
+    pub fn compare_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
         rt1.hdratio.partial_cmp(&rt2.hdratio).unwrap_or(Ordering::Equal)
     }
 }
@@ -270,10 +271,26 @@ fn string_to_hash_u64(string: &str) -> u64 {
 pub(crate) mod tests {
     use super::*;
 
+    impl DB {
+        pub fn insert(
+            &mut self,
+            pid: PathId,
+            time2bin: BTreeMap<u64, TimeBin>,
+        ) -> Option<BTreeMap<u64, TimeBin>> {
+            let rcpid: Rc<PathId> = Rc::new(pid);
+            let path_traffic: u64 = time2bin.values().fold(0u64, |acc, e| acc + e.bytes_acked_sum);
+            self.total_traffic += path_traffic;
+            if let Some(traffic) = self.pathid2traffic.insert(Rc::clone(&rcpid), path_traffic) {
+                self.total_traffic -= traffic;
+            }
+            self.pathid2time2bin.insert(Rc::clone(&rcpid), time2bin)
+        }
+    }
+
     impl TimeBin {
         pub(crate) const MOCK_TOTAL_BYTES: u64 = 1000;
 
-        pub(crate) fn mock_week(
+        pub(crate) fn mock_week_minrtt_p50(
             bin_duration_secs: u64,
             pri_minrtt_p50_even: u16,
             alt_minrtt_p50_even: u16,
@@ -285,7 +302,7 @@ pub(crate) mod tests {
             let mut time2bin: BTreeMap<u64, TimeBin> = BTreeMap::new();
             for time in (0..7 * 86400).step_by(bin_duration_secs as usize) {
                 if time % (2 * bin_duration_secs) == 0 {
-                    let timebin = TimeBin::mock(
+                    let timebin = TimeBin::mock_minrtt_p50(
                         time,
                         pri_minrtt_p50_even,
                         alt_minrtt_p50_even,
@@ -293,7 +310,7 @@ pub(crate) mod tests {
                     );
                     time2bin.insert(time, timebin);
                 } else {
-                    let timebin = TimeBin::mock(
+                    let timebin = TimeBin::mock_minrtt_p50(
                         time,
                         pri_minrtt_p50_odd,
                         alt_minrtt_p50_odd,
@@ -305,7 +322,7 @@ pub(crate) mod tests {
             time2bin
         }
 
-        pub(crate) fn mock(
+        pub(crate) fn mock_minrtt_p50(
             time: u64,
             pri_minrtt_p50: u16,
             alt_minrtt_p50: u16,
@@ -316,8 +333,26 @@ pub(crate) mod tests {
                 bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
                 num2route: vec![None; TimeBin::MAX_ROUTES],
             };
-            let primary = RouteInfo::mock(1, pri_minrtt_p50, minrtt_ms_p50_var);
-            let alternate = RouteInfo::mock(2, alt_minrtt_p50, minrtt_ms_p50_var);
+            let primary = RouteInfo::mock_minrtt_p50(1, pri_minrtt_p50, minrtt_ms_p50_var);
+            let alternate = RouteInfo::mock_minrtt_p50(2, alt_minrtt_p50, minrtt_ms_p50_var);
+            timebin.num2route[0] = Some(Box::new(primary));
+            timebin.num2route[1] = Some(Box::new(alternate));
+            timebin
+        }
+
+        pub(crate) fn mock_hdratio(
+            time: u64,
+            pri_hdratio: f32,
+            alt_hdratio: f32,
+            hdratio_var: f32,
+        ) -> TimeBin {
+            let mut timebin = TimeBin {
+                time_bucket: time,
+                bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
+                num2route: vec![None; TimeBin::MAX_ROUTES],
+            };
+            let primary = RouteInfo::mock_hdratio(1, pri_hdratio, hdratio_var);
+            let alternate = RouteInfo::mock_hdratio(2, alt_hdratio, hdratio_var);
             timebin.num2route[0] = Some(Box::new(primary));
             timebin.num2route[1] = Some(Box::new(alternate));
             timebin
@@ -325,7 +360,9 @@ pub(crate) mod tests {
     }
 
     impl RouteInfo {
-        pub(crate) fn mock(
+        const MOCK_NUM_SAMPLES: u32 = 100;
+
+        pub(crate) fn mock_minrtt_p50(
             apm_route_num: u8,
             minrtt_ms_p50: u16,
             minrtt_ms_p50_var: f32,
@@ -347,12 +384,67 @@ pub(crate) mod tests {
                 px_nexthops: 1,
             }
         }
+
+        pub(crate) fn mock_hdratio(apm_route_num: u8, hdratio: f32, hdratio_var: f32) -> RouteInfo {
+            RouteInfo {
+                apm_route_num,
+                bgp_as_path_len: 3,
+                bgp_as_path_len_wo_prepend: 2,
+                bgp_as_path_prepending: true,
+                peer_type: PeerType::Transit,
+                minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                minrtt_ms_p10: 10,
+                minrtt_ms_p50: 20,
+                minrtt_ms_p50_ci_halfwidth: 1,
+                minrtt_ms_p50_var: 10.0,
+                hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                hdratio,
+                hdratio_var,
+                px_nexthops: 1,
+            }
+        }
+    }
+
+    #[test]
+    fn test_db_insert() {
+        let bin_duration_secs: u64 = 900;
+        let mut database: DB = DB::default();
+
+        let time2bin =
+            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
+        let nbins: u64 = time2bin.len() as u64;
+
+        let pid1 = PathId {
+            vip_metro: "gru".to_string(),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+        assert!(database.insert(pid1, time2bin).is_none());
+        assert!(database.total_traffic == nbins * TimeBin::MOCK_TOTAL_BYTES);
+
+        let time2bin =
+            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
+        let pid2 = PathId {
+            vip_metro: "gru".to_string(),
+            bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
+        };
+        assert!(database.insert(pid2, time2bin).is_none());
+        assert!(database.total_traffic == 2 * nbins * TimeBin::MOCK_TOTAL_BYTES);
+
+        let time2bin =
+            TimeBin::mock_week_minrtt_p50(bin_duration_secs / 2, 50, 51, 100.0, 50, 51, 100.0);
+        let pid2 = PathId {
+            vip_metro: "gru".to_string(),
+            bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
+        };
+        assert!(database.insert(pid2, time2bin).is_some());
+        assert!(database.total_traffic == 3 * nbins * TimeBin::MOCK_TOTAL_BYTES);
     }
 
     #[test]
     fn test_timebin_mock_week() {
         let bin_duration_secs: u64 = 900;
-        let time2bin = TimeBin::mock_week(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
+        let time2bin =
+            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
         assert!(time2bin.len() == (7 * 86400 / bin_duration_secs) as usize);
         assert!(time2bin.values().fold(true, |_, e| e.num2route[0].is_some()));
         assert!(time2bin.values().fold(true, |_, e| e.num2route[1].is_some()));
@@ -366,10 +458,10 @@ pub(crate) mod tests {
         let alt1_minrtt: u16 = 100;
         let alt2_minrtt: u16 = 60;
         let minrtt_var: f32 = 100.0;
-        let mut timebin: TimeBin = TimeBin::mock(0, pri_minrtt, alt1_minrtt, minrtt_var);
+        let mut timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt1_minrtt, minrtt_var);
         let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt1_minrtt);
-        timebin.num2route[2] = Some(Box::new(RouteInfo::mock(3, 60, 100.0)));
+        timebin.num2route[2] = Some(Box::new(RouteInfo::mock_minrtt_p50(3, 60, 100.0)));
         let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt2_minrtt);
     }
@@ -379,7 +471,7 @@ pub(crate) mod tests {
         let pri_minrtt: u16 = 50;
         let alt_minrtt: u16 = 60;
         let minrtt_var: f32 = 2.0;
-        let timebin: TimeBin = TimeBin::mock(0, pri_minrtt, alt_minrtt, minrtt_var);
+        let timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_var);
         let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
         let altbox: &RouteInfo =
             timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
@@ -394,7 +486,7 @@ pub(crate) mod tests {
         let pri_minrtt: u16 = 50;
         let alt_minrtt: u16 = 60;
         let minrtt_var: f32 = 100.0;
-        let timebin: TimeBin = TimeBin::mock(0, pri_minrtt, alt_minrtt, minrtt_var);
+        let timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_var);
         let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
         let altbox: &RouteInfo =
             timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();

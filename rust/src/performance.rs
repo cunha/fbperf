@@ -1,3 +1,3 @@
-// pub mod aggregators;
+pub mod summarizers;
 pub mod db;
 pub mod perfstats;
