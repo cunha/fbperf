@@ -25,49 +25,49 @@ struct Opt {
     outdir: PathBuf,
 }
 
-fn build_summarizers() -> Vec<Box<dyn TimeBinSummarizer>> {
+fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
     for &no_alternate_is_valid in [true, false].iter() {
-        let m1 = Box::new(summarizers::MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 1,
-            max_minrtt50_diff_ci_halfwidth: 5.0,
-            no_alternate_is_valid,
-        });
-        let m2 = Box::new(summarizers::MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
-            max_minrtt50_diff_ci_halfwidth: 5.0,
-            no_alternate_is_valid,
-        });
-        let m3 = Box::new(summarizers::MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 10,
-            max_minrtt50_diff_ci_halfwidth: 5.0,
-            no_alternate_is_valid,
-        });
-        let ml = Box::new(summarizers::MinRtt50LowerBoundImprovementSummarizer {
-            max_minrtt50_diff_ci_halfwidth: 5.0,
-            no_alternate_is_valid,
-        });
-        let h1 = Box::new(summarizers::HdRatioImprovementSummarizer {
-            hdratio_min_improv: 0.01,
-            max_hdratio_diff_ci_halfwidth: 0.05,
-            no_alternate_is_valid,
-        });
-        let h2 = Box::new(summarizers::HdRatioImprovementSummarizer {
-            hdratio_min_improv: 0.03,
-            max_hdratio_diff_ci_halfwidth: 0.05,
-            no_alternate_is_valid,
-        });
-        let h3 = Box::new(summarizers::HdRatioImprovementSummarizer {
-            hdratio_min_improv: 0.05,
-            max_hdratio_diff_ci_halfwidth: 0.05,
-            no_alternate_is_valid,
-        });
-        let hl = Box::new(summarizers::HdRatioLowerBoundImprovementSummarizer {
-            max_hdratio_diff_ci_halfwidth: 0.05,
-            no_alternate_is_valid,
-        });
-        let mut batch: Vec<Box<dyn TimeBinSummarizer>> = vec![m1, m2, m3, ml, h1, h2, h3, hl];
-        summarizers.append(&mut batch);
+        for &minrtt50_min_improv in [0, 5, 10].iter() {
+            let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
+                minrtt50_min_improv,
+                max_minrtt50_diff_ci_halfwidth: 10.0,
+                no_alternate_is_valid,
+                compare_lower_bound: true,
+            });
+            summarizers.push(ml);
+        }
+        for &hdratio_min_improv in [0.0, 0.02, 0.05].iter() {
+            let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
+                hdratio_min_improv,
+                max_hdratio_diff_ci_halfwidth: 0.05,
+                no_alternate_is_valid,
+                compare_upper_bound: true,
+            });
+            summarizers.push(hl);
+        }
+    }
+    let max_minrtt50_diff_ci_halfwidth: f32 = 10.0;
+    let max_minrtt50_var: f32 = 25.0;
+    for &min_minrtt50_diff_degradation in [0, 5, 10].iter() {
+        let ml = Box::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
+            min_minrtt50_diff_degradation,
+            max_minrtt50_diff_ci_halfwidth,
+            max_minrtt50_var,
+            db,
+        ));
+        summarizers.push(ml);
+    }
+    let max_hdratio_diff_ci_halfwidth: f32 = 10.0;
+    let max_hdratio_var: f32 = 25.0;
+    for &min_hdratio_diff_degradation in [0.0, 0.02, 0.05].iter() {
+        let hl = Box::new(summarizers::degradation::HdRatioLowerBoundDegradationSummarizer::new(
+            min_hdratio_diff_degradation,
+            max_hdratio_diff_ci_halfwidth,
+            max_hdratio_var,
+            db,
+        ));
+        summarizers.push(hl);
     }
     summarizers
 }
@@ -79,19 +79,28 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         min_frac_valid_bins: 0.8,
         continuous_min_frac_shifted_bins: 0.8,
         diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.9,
-        uneventful_max_frac_shifted_bins: 0.05,
+        diurnal_bad_bin_min_prob_shift: 0.8,
+        uneventful_max_frac_shifted_bins: 0.02,
     };
     let c2 = perfstats::TemporalConfig {
         bin_duration_secs: 900,
-        min_days: 4,
+        min_days: 2,
         min_frac_valid_bins: 0.8,
         continuous_min_frac_shifted_bins: 0.8,
         diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.9,
+        diurnal_bad_bin_min_prob_shift: 0.8,
         uneventful_max_frac_shifted_bins: 0.05,
     };
-    vec![c1, c2]
+    let c3 = perfstats::TemporalConfig {
+        bin_duration_secs: 900,
+        min_days: 2,
+        min_frac_valid_bins: 0.8,
+        continuous_min_frac_shifted_bins: 0.8,
+        diurnal_min_frac_bad_bins: 0.05,
+        diurnal_bad_bin_min_prob_shift: 0.75,
+        uneventful_max_frac_shifted_bins: 0.05,
+    };
+    vec![c1, c2, c3]
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -103,7 +112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("db has {} paths, {} total traffic", db.pathid2traffic.len(), db.total_traffic);
 
     let tempconfigs: Vec<perfstats::TemporalConfig> = build_temporal_configs();
-    let summarizers: Vec<Box<dyn perfstats::TimeBinSummarizer>> = build_summarizers();
+    let summarizers: Vec<Box<dyn perfstats::TimeBinSummarizer>> = build_summarizers(&db);
 
     for summarizer in summarizers.iter() {
         let mut dbsum: perfstats::DBSummary =

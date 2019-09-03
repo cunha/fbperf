@@ -12,7 +12,7 @@ use crate::cdf;
 use crate::performance::db;
 
 pub trait TimeBinSummarizer {
-    fn summarize(&self, bin: &db::TimeBin) -> Option<TimeBinStats>;
+    fn summarize(&self, pathid: &db::PathId, bin: &db::TimeBin) -> Option<TimeBinStats>;
     fn prefix(&self) -> String;
 }
 
@@ -84,7 +84,7 @@ impl TemporalConfig {
     }
     pub fn prefix(&self) -> String {
         format!(
-            "temp-config--{}-{}-{:0.2}-{:0.2}-{:0.2}-{:0.2}-{:0.2}",
+            "tempconfig-bin:{}-days:{}-fracValid:{:0.2}-cont:{:0.2}-minBadBins:{:0.2}-badBinPrev:{:0.2}-uneventful:{:0.2}",
             self.bin_duration_secs,
             self.min_days,
             self.min_frac_valid_bins,
@@ -104,7 +104,7 @@ impl DBSummary {
     ) -> DBSummary {
         let mut dbsum = DBSummary::default();
         for (pid, time2bin) in &db.pathid2time2bin {
-            let psum = PathSummary::build(time2bin, summarizer, tempconfig);
+            let psum = PathSummary::build(&pid, time2bin, summarizer, tempconfig);
             if psum.valid_bytes == 0 {
                 continue;
             }
@@ -141,6 +141,24 @@ impl DBSummary {
         let mut fpath = path.clone();
         fpath.push("diff_ci_bins_weighted.cdf");
         self.dump_bin_cdf(&fpath, |bs: &TimeBinStats| (bs.diff_ci, bs.bytes as f32))?;
+
+        let mut fpath = path.clone();
+        fpath.push("diff_ci_lb_bins.cdf");
+        self.dump_bin_cdf(&fpath, |bs: &TimeBinStats| (bs.diff_ci - bs.diff_ci_halfwidth, 1.0))?;
+        let mut fpath = path.clone();
+        fpath.push("diff_ci_lb_bins_weighted.cdf");
+        self.dump_bin_cdf(&fpath, |bs: &TimeBinStats| {
+            (bs.diff_ci - bs.diff_ci_halfwidth, bs.bytes as f32)
+        })?;
+
+        let mut fpath = path.clone();
+        fpath.push("diff_ci_ub_bins.cdf");
+        self.dump_bin_cdf(&fpath, |bs: &TimeBinStats| (bs.diff_ci + bs.diff_ci_halfwidth, 1.0))?;
+        let mut fpath = path.clone();
+        fpath.push("diff_ci_ub_bins_weighted.cdf");
+        self.dump_bin_cdf(&fpath, |bs: &TimeBinStats| {
+            (bs.diff_ci + bs.diff_ci_halfwidth, bs.bytes as f32)
+        })?;
 
         let mut fpath = path.clone();
         fpath.push("frac_shifted_bins_paths.cdf");
@@ -236,6 +254,7 @@ impl DBSummary {
 
 impl PathSummary {
     fn build(
+        pathid: &db::PathId,
         time2bin: &BTreeMap<u64, db::TimeBin>,
         summarizer: &dyn TimeBinSummarizer,
         tempconfig: &TemporalConfig,
@@ -246,7 +265,7 @@ impl PathSummary {
             // This requires that time2bin is a BTreeMap as
             // computing the number of distinct shift events
             // requires processing TimeBins in time order.
-            if let Some(binstats) = summarizer.summarize(timebin) {
+            if let Some(binstats) = summarizer.summarize(pathid, timebin) {
                 psum.valid_bytes += timebin.bytes_acked_sum;
                 let e = psum.day2shifts.entry((time / 86400) as u32);
                 if binstats.is_shifted {
@@ -330,7 +349,7 @@ fn compute_offset(time: u64, bin_duration_secs: u32) -> usize {
 mod tests {
     use super::*;
     use crate::performance::db;
-    use crate::performance::summarizers::MinRtt50ImprovementSummarizer;
+    use crate::performance::summarizers::opportunity::MinRtt50ImprovementSummarizer;
 
     const BIN_DURATION_SECS: u64 = 900;
     const NULL_TEMPCONFIG: TemporalConfig = TemporalConfig {
@@ -354,15 +373,21 @@ mod tests {
 
     #[test]
     fn test_path_summary_no_valid() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 2,
+            minrtt50_min_improv: 2,
             max_minrtt50_diff_ci_halfwidth: 15.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 51, 50, 100.0);
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.is_empty());
         assert!(psum.day2shifts.is_empty());
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -375,7 +400,7 @@ mod tests {
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100.0, 55, 50, 100.0);
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.is_empty());
         assert!(psum.day2shifts.is_empty());
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -389,15 +414,21 @@ mod tests {
 
     #[test]
     fn test_path_summary_all_valid_no_shifts() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 2,
+            minrtt50_min_improv: 2,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -411,11 +442,12 @@ mod tests {
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 0.001, 100, 50, 0.001);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 51,
+            minrtt50_min_improv: 51,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -429,15 +461,21 @@ mod tests {
 
     #[test]
     fn test_path_summary_all_valid_all_shifts() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 1,
+            minrtt50_min_improv: 1,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 86400 / BIN_DURATION_SECS as u32));
@@ -451,11 +489,12 @@ mod tests {
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 0.001);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 86400 / BIN_DURATION_SECS as u32));
@@ -469,15 +508,21 @@ mod tests {
 
     #[test]
     fn test_path_summary_half_valid_no_shifts() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 2,
+            minrtt50_min_improv: 2,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins / 2);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -491,11 +536,12 @@ mod tests {
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 0.001, 100, 50, 100.0);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 51,
+            minrtt50_min_improv: 51,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins / 2);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 0));
@@ -509,15 +555,21 @@ mod tests {
 
     #[test]
     fn test_path_summary_half_valid_all_shifts() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 1,
+            minrtt50_min_improv: 1,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins / 2);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum
@@ -534,11 +586,12 @@ mod tests {
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 100.0);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
-        let psum = PathSummary::build(&time2bin, &summarizer, &NULL_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.len() == nbins / 2);
         assert!(psum.day2shifts.len() == 7);
         assert!(psum
@@ -555,19 +608,25 @@ mod tests {
 
     #[test]
     fn test_continuous() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 0.001);
-        let psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 100.0);
-        let mut psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let mut psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -578,14 +637,20 @@ mod tests {
 
     #[test]
     fn test_diurnal_num_bad_bins() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 55, 50, 0.001);
-        let mut psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let mut psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Diurnal);
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -601,10 +666,16 @@ mod tests {
 
     #[test]
     fn test_diurnal_min_prob_shift() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
         let mut time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
@@ -614,7 +685,7 @@ mod tests {
         let bins = time2bin.len();
         assert!(bins == 2 * 7 * 86400 / BIN_DURATION_SECS as usize);
 
-        let mut psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let mut psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Episodic);
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -625,15 +696,21 @@ mod tests {
 
     #[test]
     fn test_undersampled() {
+        let _pathid: db::PathId = db::PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+        };
+
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100.0, 55, 50, 0.001);
-        let mut psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let mut psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -643,7 +720,7 @@ mod tests {
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 51, 50, 0.001);
-        let mut psum = PathSummary::build(&time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
+        let mut psum = PathSummary::build(&_pathid, &time2bin, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -655,9 +732,10 @@ mod tests {
     #[test]
     fn test_db_reclassify() {
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_diff_min_improv: 5,
+            minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
             no_alternate_is_valid: true,
+            compare_lower_bound: false,
         };
 
         let mut database: db::DB = db::DB::default();

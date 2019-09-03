@@ -45,7 +45,7 @@ pub struct PathId {
     pub bgp_ip_prefix: IpNet,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TimeBin {
     pub time_bucket: u64,
     pub bytes_acked_sum: u64,
@@ -234,7 +234,7 @@ impl RouteInfo {
         let var1 = rt1.minrtt_ms_p50_var;
         let var2 = rt2.minrtt_ms_p50_var;
         let md: f32 = f32::from(med1) - f32::from(med2);
-        let interval = CONFIDENCE_Z * (var1 + var2).sqrt();
+        let interval: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
         (md, interval)
     }
 
@@ -244,7 +244,7 @@ impl RouteInfo {
         let var2: f32 = rt2.hdratio_var;
         let n1: f32 = rt1.hdratio_num_samples as f32;
         let n2: f32 = rt2.hdratio_num_samples as f32;
-        let interval = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
+        let interval: f32 = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
         (diff, interval)
     }
 
@@ -338,6 +338,38 @@ pub(crate) mod tests {
             timebin.num2route[0] = Some(Box::new(primary));
             timebin.num2route[1] = Some(Box::new(alternate));
             timebin
+        }
+
+        pub(crate) fn mock_week_hdratio(
+            bin_duration_secs: u64,
+            pri_hdratio_even: f32,
+            alt_hdratio_even: f32,
+            hdratio_var_even: f32,
+            pri_hdratio_odd: f32,
+            alt_hdratio_odd: f32,
+            hdratio_var_odd: f32,
+        ) -> BTreeMap<u64, TimeBin> {
+            let mut time2bin: BTreeMap<u64, TimeBin> = BTreeMap::new();
+            for time in (0..7 * 86400).step_by(bin_duration_secs as usize) {
+                if time % (2 * bin_duration_secs) == 0 {
+                    let timebin = TimeBin::mock_hdratio(
+                        time,
+                        pri_hdratio_even,
+                        alt_hdratio_even,
+                        hdratio_var_even,
+                    );
+                    time2bin.insert(time, timebin);
+                } else {
+                    let timebin = TimeBin::mock_hdratio(
+                        time,
+                        pri_hdratio_odd,
+                        alt_hdratio_odd,
+                        hdratio_var_odd,
+                    );
+                    time2bin.insert(time, timebin);
+                }
+            }
+            time2bin
         }
 
         pub(crate) fn mock_hdratio(
