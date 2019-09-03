@@ -55,7 +55,7 @@ impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "minrtt50--opp--bound-{}--no-alt-valid-{}--max-diff-ci-size-{}--min-improv-{}",
+            "minrtt50--opp--bound-{}--no-alt-valid-{}--halfwidth-{:0.2}--min-improv-{}",
             self.compare_lower_bound,
             self.no_alternate_is_valid,
             self.max_minrtt50_diff_ci_halfwidth,
@@ -102,8 +102,11 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "hdratio--min-improv-{:0.3}--max-diff-ci-size-{:0.3}--no-alternates-improv-{}",
-            self.hdratio_min_improv, self.max_hdratio_diff_ci_halfwidth, self.no_alternate_is_valid
+            "hdratio--opp--bound-{}--no-alt-valid-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
+            self.compare_upper_bound,
+            self.no_alternate_is_valid,
+            self.max_hdratio_diff_ci_halfwidth,
+            self.hdratio_min_improv,
         )
     }
 }

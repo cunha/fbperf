@@ -73,7 +73,17 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
 }
 
 fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
-    let c1 = perfstats::TemporalConfig {
+    let mut configs: Vec<perfstats::TemporalConfig> = Vec::new();
+    configs.push(perfstats::TemporalConfig {
+        bin_duration_secs: 900,
+        min_days: 2,
+        min_frac_valid_bins: 0.6,
+        continuous_min_frac_shifted_bins: 0.8,
+        diurnal_min_frac_bad_bins: 0.1,
+        diurnal_bad_bin_min_prob_shift: 0.8,
+        uneventful_max_frac_shifted_bins: 0.02,
+    });
+    configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.8,
@@ -81,8 +91,17 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         diurnal_min_frac_bad_bins: 0.1,
         diurnal_bad_bin_min_prob_shift: 0.8,
         uneventful_max_frac_shifted_bins: 0.02,
-    };
-    let c2 = perfstats::TemporalConfig {
+    });
+    configs.push(perfstats::TemporalConfig {
+        bin_duration_secs: 900,
+        min_days: 2,
+        min_frac_valid_bins: 0.6,
+        continuous_min_frac_shifted_bins: 0.8,
+        diurnal_min_frac_bad_bins: 0.1,
+        diurnal_bad_bin_min_prob_shift: 0.8,
+        uneventful_max_frac_shifted_bins: 0.05,
+    });
+    configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.8,
@@ -90,17 +109,26 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         diurnal_min_frac_bad_bins: 0.1,
         diurnal_bad_bin_min_prob_shift: 0.8,
         uneventful_max_frac_shifted_bins: 0.05,
-    };
-    let c3 = perfstats::TemporalConfig {
+    });
+    configs.push(perfstats::TemporalConfig {
+        bin_duration_secs: 900,
+        min_days: 2,
+        min_frac_valid_bins: 0.6,
+        continuous_min_frac_shifted_bins: 0.8,
+        diurnal_min_frac_bad_bins: 0.05,
+        diurnal_bad_bin_min_prob_shift: 0.75,
+        uneventful_max_frac_shifted_bins: 0.02,
+    });
+    configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.8,
         continuous_min_frac_shifted_bins: 0.8,
         diurnal_min_frac_bad_bins: 0.05,
         diurnal_bad_bin_min_prob_shift: 0.75,
-        uneventful_max_frac_shifted_bins: 0.05,
-    };
-    vec![c1, c2, c3]
+        uneventful_max_frac_shifted_bins: 0.02,
+    });
+    configs
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

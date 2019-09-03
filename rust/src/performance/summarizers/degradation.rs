@@ -180,7 +180,7 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "minrtt50--lb-degradation--max-halfwidth-{:0.2}--max-var-{:0.2}--min-degradation-{}",
+            "minrtt50--deg--bound-true--halfwidth-{:0.2}--max-var-{:0.2}--min-deg-{}",
             self.max_diff_ci_halfwidth, self.max_minrtt50_var, self.min_diff_degradation
         )
     }
@@ -267,7 +267,8 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDistinctPathsDegradationSummarizer 
         }
     }
     fn prefix(&self) -> String {
-        format!("minrtt50--lb-degradation-identical--max-halfwidth-{:0.2}--max-var-{:0.2}--min-frac-bins-{:0.2}",
+        format!(
+            "minrtt50--deg-identical--bound-true--halfwidth-{:0.2}--max-var-{:0.2}--min-deg-{}",
             self.max_diff_ci_halfwidth,
             self.max_minrtt50_var,
             self.min_frac_bins_using_bestbin_path,
@@ -343,7 +344,7 @@ impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "hdratio--lb-degradation--max-halfwidth-{:0.2}--max-var-{:0.2}--min-degradation-{:0.2}",
+            "hdratio--deg--bound-true--halfwidth-{:0.2}--max-var-{:0.2}--min-deg-{:0.2}",
             self.max_diff_ci_halfwidth, self.max_hdratio_var, self.min_diff_degradation
         )
     }
