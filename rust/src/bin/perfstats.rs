@@ -26,12 +26,16 @@ struct Opt {
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
+    let max_minrtt50_diff_ci_halfwidth: f32 = 20.0;
+    let max_minrtt50_var: f32 = 25.0;
+    let max_hdratio_diff_ci_halfwidth: f32 = 0.1;
+    let max_hdratio_var: f32 = 0.5;
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
     for &no_alternate_is_valid in [true, false].iter() {
         for &minrtt50_min_improv in [0, 5, 10].iter() {
             let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
                 minrtt50_min_improv,
-                max_minrtt50_diff_ci_halfwidth: 10.0,
+                max_minrtt50_diff_ci_halfwidth,
                 no_alternate_is_valid,
                 compare_lower_bound: true,
             });
@@ -40,15 +44,13 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         for &hdratio_min_improv in [0.0, 0.02, 0.05].iter() {
             let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
                 hdratio_min_improv,
-                max_hdratio_diff_ci_halfwidth: 0.05,
+                max_hdratio_diff_ci_halfwidth,
                 no_alternate_is_valid,
                 compare_upper_bound: true,
             });
             summarizers.push(hl);
         }
     }
-    let max_minrtt50_diff_ci_halfwidth: f32 = 10.0;
-    let max_minrtt50_var: f32 = 25.0;
     for &min_minrtt50_diff_degradation in [0, 5, 10].iter() {
         let ml = Box::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
             min_minrtt50_diff_degradation,
@@ -58,8 +60,6 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         ));
         summarizers.push(ml);
     }
-    let max_hdratio_diff_ci_halfwidth: f32 = 10.0;
-    let max_hdratio_var: f32 = 25.0;
     for &min_hdratio_diff_degradation in [0.0, 0.02, 0.05].iter() {
         let hl = Box::new(summarizers::degradation::HdRatioLowerBoundDegradationSummarizer::new(
             min_hdratio_diff_degradation,
@@ -78,55 +78,37 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.6,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.8,
-        uneventful_max_frac_shifted_bins: 0.02,
+        continuous_min_frac_shifted_bins: 0.5,
+        diurnal_min_bad_bins: 1,
+        diurnal_bad_bin_min_prob_shift: 0.75,
+        uneventful_max_frac_shifted_bins: 0.01,
     });
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.8,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.8,
-        uneventful_max_frac_shifted_bins: 0.02,
+        continuous_min_frac_shifted_bins: 0.5,
+        diurnal_min_bad_bins: 1,
+        diurnal_bad_bin_min_prob_shift: 0.75,
+        uneventful_max_frac_shifted_bins: 0.01,
     });
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.6,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.8,
-        uneventful_max_frac_shifted_bins: 0.05,
+        continuous_min_frac_shifted_bins: 0.75,
+        diurnal_min_bad_bins: 1,
+        diurnal_bad_bin_min_prob_shift: 0.75,
+        uneventful_max_frac_shifted_bins: 0.01,
     });
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
         min_frac_valid_bins: 0.8,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.1,
-        diurnal_bad_bin_min_prob_shift: 0.8,
-        uneventful_max_frac_shifted_bins: 0.05,
-    });
-    configs.push(perfstats::TemporalConfig {
-        bin_duration_secs: 900,
-        min_days: 2,
-        min_frac_valid_bins: 0.6,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.05,
+        continuous_min_frac_shifted_bins: 0.75,
+        diurnal_min_bad_bins: 1,
         diurnal_bad_bin_min_prob_shift: 0.75,
-        uneventful_max_frac_shifted_bins: 0.02,
-    });
-    configs.push(perfstats::TemporalConfig {
-        bin_duration_secs: 900,
-        min_days: 2,
-        min_frac_valid_bins: 0.8,
-        continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.05,
-        diurnal_bad_bin_min_prob_shift: 0.75,
-        uneventful_max_frac_shifted_bins: 0.02,
+        uneventful_max_frac_shifted_bins: 0.01,
     });
     configs
 }

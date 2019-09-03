@@ -34,7 +34,7 @@ pub struct TemporalConfig {
     pub min_days: u32,
     pub min_frac_valid_bins: f32,
     pub continuous_min_frac_shifted_bins: f32,
-    pub diurnal_min_frac_bad_bins: f32,
+    pub diurnal_min_bad_bins: u32,
     pub diurnal_bad_bin_min_prob_shift: f32,
     pub uneventful_max_frac_shifted_bins: f32,
 }
@@ -57,7 +57,7 @@ pub struct PathSummary {
     // total_bins needs to come from db::DB
     shifted_bytes: u64,
     valid_bytes: u64,
-    frac_bad_bins: f32,
+    num_bad_bins: u32,
     temporal_behavior: TemporalBehavior,
 }
 
@@ -84,12 +84,12 @@ impl TemporalConfig {
     }
     pub fn prefix(&self) -> String {
         format!(
-            "tempconfig-bin:{}-days:{}-fracValid:{:0.2}-cont:{:0.2}-minBadBins:{:0.2}-badBinPrev:{:0.2}-uneventful:{:0.2}",
+            "tempconfig--bin-{}--days-{}--fracValid-{:0.2}--cont-{:0.2}--minBadBins-{}--badBinPrev-{:0.2}--uneventful-{:0.2}",
             self.bin_duration_secs,
             self.min_days,
             self.min_frac_valid_bins,
             self.continuous_min_frac_shifted_bins,
-            self.diurnal_min_frac_bad_bins,
+            self.diurnal_min_bad_bins,
             self.diurnal_bad_bin_min_prob_shift,
             self.uneventful_max_frac_shifted_bins
         )
@@ -287,7 +287,7 @@ impl PathSummary {
     }
 
     fn classify(&mut self, total_bins: u32, config: &TemporalConfig) {
-        self.compute_frac_bad_bins(config);
+        self.compute_num_bad_bins(config);
         let valid_bins: f32 = self.time2binstats.len() as f32;
         let frac_valid: f32 = valid_bins / total_bins as f32;
         if frac_valid < config.min_frac_valid_bins {
@@ -298,7 +298,7 @@ impl PathSummary {
                 self.temporal_behavior = TemporalBehavior::Uneventful;
             } else if frac_shift >= config.continuous_min_frac_shifted_bins {
                 self.temporal_behavior = TemporalBehavior::Continuous;
-            } else if self.frac_bad_bins >= config.diurnal_min_frac_bad_bins {
+            } else if self.num_bad_bins >= config.diurnal_min_bad_bins {
                 self.temporal_behavior = TemporalBehavior::Diurnal;
             } else {
                 self.temporal_behavior = TemporalBehavior::Episodic;
@@ -306,10 +306,10 @@ impl PathSummary {
         }
     }
 
-    fn compute_frac_bad_bins(&mut self, config: &TemporalConfig) {
+    fn compute_num_bad_bins(&mut self, config: &TemporalConfig) {
         let num_days: u32 = self.day2shifts.len() as u32;
         if num_days < config.min_days {
-            self.frac_bad_bins = 0.0;
+            self.num_bad_bins = 0;
             return;
         }
         let min_shifts: u32 = (config.diurnal_bad_bin_min_prob_shift * num_days as f32) as u32;
@@ -320,8 +320,7 @@ impl PathSummary {
                 offset_shift_counts[compute_offset(*t, config.bin_duration_secs)] += 1;
             }
         });
-        let num_bad_bins: u32 = compute_num_bad_bins(&offset_shift_counts, min_shifts);
-        self.frac_bad_bins = num_bad_bins as f32 / bins_per_day as f32;
+        self.num_bad_bins = compute_num_bad_bins(&offset_shift_counts, min_shifts);
     }
 }
 
@@ -357,7 +356,7 @@ mod tests {
         min_days: 7,
         min_frac_valid_bins: 1.0,
         continuous_min_frac_shifted_bins: 1.0,
-        diurnal_min_frac_bad_bins: 1.0,
+        diurnal_min_bad_bins: 96,
         diurnal_bad_bin_min_prob_shift: 1.0,
         uneventful_max_frac_shifted_bins: 1.0,
     };
@@ -366,7 +365,7 @@ mod tests {
         min_days: 7,
         min_frac_valid_bins: 0.8,
         continuous_min_frac_shifted_bins: 0.8,
-        diurnal_min_frac_bad_bins: 0.25,
+        diurnal_min_bad_bins: 24,
         diurnal_bad_bin_min_prob_shift: 0.8,
         uneventful_max_frac_shifted_bins: 0.25,
     };
@@ -395,7 +394,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == 0);
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let time2bin =
@@ -408,7 +407,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == 0);
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
     }
 
@@ -436,7 +435,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Uneventful);
 
         let time2bin =
@@ -455,7 +454,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Uneventful);
     }
 
@@ -483,7 +482,7 @@ mod tests {
         assert!(psum.shifted_bins == nbins as u32);
         assert!(psum.shifted_bytes == psum.valid_bytes);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.frac_bad_bins >= 0.0);
+        assert!(psum.num_bad_bins == 86400 / (BIN_DURATION_SECS as u32));
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
 
         let time2bin =
@@ -502,7 +501,7 @@ mod tests {
         assert!(psum.shifted_bins == nbins as u32);
         assert!(psum.shifted_bytes == psum.valid_bytes);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.frac_bad_bins >= 0.0);
+        assert!(psum.num_bad_bins == 86400 / (BIN_DURATION_SECS as u32));
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
     }
 
@@ -530,7 +529,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let time2bin =
@@ -549,7 +548,7 @@ mod tests {
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
-        assert!(psum.frac_bad_bins == 0.0);
+        assert!(psum.num_bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
     }
 
@@ -580,7 +579,7 @@ mod tests {
         assert!(psum.shifted_bins == (nbins / 2) as u32);
         assert!(psum.shifted_bytes == psum.valid_bytes);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
-        assert!(psum.frac_bad_bins >= 0.0);
+        assert!(psum.num_bad_bins == 48);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let time2bin =
@@ -602,7 +601,7 @@ mod tests {
         assert!(psum.shifted_bins == (nbins / 2) as u32);
         assert!(psum.shifted_bytes == psum.valid_bytes);
         assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
-        assert!(psum.frac_bad_bins >= 0.0);
+        assert!(psum.num_bad_bins == 48);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
     }
 
@@ -654,7 +653,7 @@ mod tests {
         assert!(psum.temporal_behavior == TemporalBehavior::Diurnal);
 
         let mut config = DEFAULT_TEMPCONFIG;
-        config.diurnal_min_frac_bad_bins = 0.6;
+        config.diurnal_min_bad_bins = 56; // 0.6 * 96
         psum.classify(time2bin.len() as u32, &config);
         assert!(psum.temporal_behavior == TemporalBehavior::Episodic);
 
