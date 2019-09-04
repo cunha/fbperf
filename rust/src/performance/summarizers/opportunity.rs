@@ -14,7 +14,7 @@ pub struct HdRatioImprovementSummarizer {
     pub hdratio_min_improv: f32,
     pub max_hdratio_diff_ci_halfwidth: f32,
     pub no_alternate_is_valid: bool,
-    pub compare_upper_bound: bool,
+    pub compare_lower_bound: bool,
 }
 
 impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
@@ -81,19 +81,19 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
                 }
             }
             (Some(ref primary), Some(ref bestalt)) => {
-                let (diff, halfwidth) = RouteInfo::hdratio_diff_ci(primary, bestalt);
+                let (diff, halfwidth) = RouteInfo::hdratio_diff_ci(bestalt, primary);
                 if halfwidth > self.max_hdratio_diff_ci_halfwidth {
                     None
                 } else {
-                    let limit: f32 = if self.compare_upper_bound {
-                        diff + halfwidth
+                    let limit: f32 = if self.compare_lower_bound {
+                        diff - halfwidth
                     } else {
                         diff
                     };
                     Some(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
-                        is_shifted: limit <= -self.hdratio_min_improv,
+                        is_shifted: limit >= self.hdratio_min_improv,
                         bytes: bin.bytes_acked_sum,
                     })
                 }
@@ -103,7 +103,7 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
     fn prefix(&self) -> String {
         format!(
             "hdratio--opp--bound-{}--no-alt-valid-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
-            self.compare_upper_bound,
+            self.compare_lower_bound,
             self.no_alternate_is_valid,
             self.max_hdratio_diff_ci_halfwidth,
             self.hdratio_min_improv,
@@ -215,13 +215,13 @@ mod tests {
             hdratio_min_improv: 0.0,
             max_hdratio_diff_ci_halfwidth: 0.5,
             no_alternate_is_valid: true,
-            compare_upper_bound: true,
+            compare_lower_bound: true,
         };
         let sum_false = HdRatioImprovementSummarizer {
             hdratio_min_improv: 0.0,
             max_hdratio_diff_ci_halfwidth: 0.5,
             no_alternate_is_valid: false,
-            compare_upper_bound: true,
+            compare_lower_bound: true,
         };
 
         // ci_halfwidth = 2 * (0.5/100 + 0.5/100).sqrt() = 0.2
@@ -231,14 +231,14 @@ mod tests {
         assert!(binstats_true.is_some());
         let binstats_true = binstats_true.unwrap();
         assert!(!binstats_true.is_shifted);
-        assert!((binstats_true.diff_ci + 0.1).abs() < 1e-6);
+        assert!((binstats_true.diff_ci - 0.1).abs() < 1e-6);
         assert!((binstats_true.diff_ci_halfwidth - 0.2).abs() < 1e-6);
 
         let binstats_false = sum_false.summarize(&_pathid, &timebin);
         assert!(binstats_false.is_some());
         let binstats_false = binstats_false.unwrap();
         assert!(!binstats_false.is_shifted);
-        assert!((binstats_false.diff_ci + 0.1).abs() < 1e-6);
+        assert!((binstats_false.diff_ci - 0.1).abs() < 1e-6);
         assert!((binstats_false.diff_ci_halfwidth - 0.2).abs() < 1e-6);
 
         timebin.num2route[1] = None;
@@ -265,13 +265,13 @@ mod tests {
             hdratio_min_improv: 0.0,
             max_hdratio_diff_ci_halfwidth: 0.15,
             no_alternate_is_valid: false,
-            compare_upper_bound: true,
+            compare_lower_bound: true,
         };
         let sum2 = HdRatioImprovementSummarizer {
             hdratio_min_improv: 0.0,
             max_hdratio_diff_ci_halfwidth: 0.25,
             no_alternate_is_valid: false,
-            compare_upper_bound: true,
+            compare_lower_bound: true,
         };
 
         // ci_halfwidth = 2 * (0.5/100 + 0.5/100).sqrt() = 0.2
@@ -284,7 +284,7 @@ mod tests {
         assert!(binstats2.is_some());
         let binstats2 = binstats2.unwrap();
         assert!(binstats2.is_shifted);
-        assert!((binstats2.diff_ci + 0.25).abs() < 1e-6);
+        assert!((binstats2.diff_ci - 0.25).abs() < 1e-6);
         assert!((binstats2.diff_ci_halfwidth - 0.2).abs() < 1e-6);
 
         let timebin = db::TimeBin::mock_hdratio(0, 0.8, 0.95, 0.5);
@@ -293,7 +293,7 @@ mod tests {
         assert!(binstats2.is_some());
         let binstats2 = binstats2.unwrap();
         assert!(!binstats2.is_shifted);
-        assert!((binstats2.diff_ci + 0.15).abs() < 1e-6);
+        assert!((binstats2.diff_ci - 0.15).abs() < 1e-6);
         assert!((binstats2.diff_ci_halfwidth - 0.2).abs() < 1e-6);
     }
 }

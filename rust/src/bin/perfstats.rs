@@ -46,7 +46,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
                 hdratio_min_improv,
                 max_hdratio_diff_ci_halfwidth,
                 no_alternate_is_valid,
-                compare_upper_bound: true,
+                compare_lower_bound: true,
             });
             summarizers.push(hl);
         }
@@ -129,8 +129,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             perfstats::DBSummary::build(&db, summarizer.borrow(), &tempconfigs[0]);
         for (i, tempcfg) in tempconfigs.iter().enumerate() {
             let mut dir: PathBuf = opts.outdir.clone();
-            dir.push(summarizer.prefix());
             dir.push(tempcfg.prefix());
+            dir.push(summarizer.prefix());
             info!("processing {}", dir.to_str().unwrap());
             if i > 0 {
                 dbsum.reclassify(&db, tempcfg);

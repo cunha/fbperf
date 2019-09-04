@@ -164,14 +164,14 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
             (None, _) => None,
             (_, None) => None,
             (Some(bestroute), Some(primary)) => {
-                let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(bestroute, primary);
+                let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(primary, bestroute);
                 if halfwidth > self.max_diff_ci_halfwidth {
                     None
                 } else {
                     Some(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
-                        is_shifted: diff + halfwidth <= -f32::from(self.min_diff_degradation),
+                        is_shifted: diff - halfwidth > f32::from(self.min_diff_degradation),
                         bytes: bin.bytes_acked_sum,
                     })
                 }
@@ -252,14 +252,14 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDistinctPathsDegradationSummarizer 
             (None, _) => None,
             (_, None) => None,
             (Some(bestroute), Some(primary)) => {
-                let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(bestroute, primary);
+                let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(primary, bestroute);
                 if halfwidth > self.max_diff_ci_halfwidth {
                     None
                 } else {
                     Some(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
-                        is_shifted: diff + halfwidth <= -f32::from(self.min_diff_degradation),
+                        is_shifted: diff - halfwidth > f32::from(self.min_diff_degradation),
                         bytes: bin.bytes_acked_sum,
                     })
                 }
@@ -357,7 +357,7 @@ mod tests {
     const BIN_DURATION_SECS: u64 = 900;
 
     #[test]
-    fn test_degradation_new_minrtt_var() {
+    fn test_minrtt_degradation_new_minrtt_var() {
         let pid1 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn test_degradation_new_nexthops() {
+    fn test_minrtt_degradation_new_nexthops() {
         let pid1 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn test_degradation_distinct_new_minrtt_var() {
+    fn test_minrtt_degradation_distinct_new_minrtt_var() {
         let pid1 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn test_degradation_distinct_new_nexthops() {
+    fn test_minrtt_degradation_distinct_new_nexthops() {
         let pid1 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_degradation_distinct_summarize() {
+    fn test_minrtt_degradation_distinct_summarize() {
         let pid1 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
@@ -563,14 +563,14 @@ mod tests {
         assert!(binstats.is_some());
         let binstats = binstats.unwrap();
         assert!(!binstats.is_shifted);
-        assert!((binstats.diff_ci + 1.0).abs() < 1e-6);
+        assert!((binstats.diff_ci - 1.0).abs() < 1e-6);
 
         let timebin = TimeBin::mock_minrtt_p50(0, 60, 51, 8.0);
         let binstats = sum.summarize(&pid1, &timebin);
         assert!(binstats.is_some());
         let binstats = binstats.unwrap();
         assert!(binstats.is_shifted);
-        assert!((binstats.diff_ci + 10.0).abs() < 1e-6);
+        assert!((binstats.diff_ci - 10.0).abs() < 1e-6);
 
         let timebin = TimeBin::mock_minrtt_p50(0, 60, 51, 100.0);
         let binstats = sum.summarize(&pid1, &timebin);
