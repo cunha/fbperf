@@ -34,6 +34,7 @@ pub enum PeerType {
 pub struct DB {
     pub pathid2time2bin: HashMap<Rc<PathId>, BTreeMap<u64, TimeBin>>,
     pub pathid2traffic: HashMap<Rc<PathId>, u64>,
+    pub total_bins: u32,
     pub total_traffic: u64,
     pub rows: u64,
     error_counts: HashMap<ParseErrorKind, u64>,
@@ -88,7 +89,7 @@ impl PeerType {
 }
 
 impl DB {
-    pub fn from_file(input: &PathBuf) -> Result<DB, std::io::Error> {
+    pub fn from_file(input: &PathBuf, bin_duration_secs: u32) -> Result<DB, std::io::Error> {
         let f = File::open(input)?;
         let filerdr = BufReader::new(f);
         let gzrdr = GzDecoder::new(filerdr);
@@ -96,10 +97,13 @@ impl DB {
         let mut db = DB {
             pathid2time2bin: HashMap::new(),
             pathid2traffic: HashMap::new(),
+            total_bins: 0,
             total_traffic: 0,
             rows: 0,
             error_counts: HashMap::new(),
         };
+        let mut min_timestamp: u64 = std::u64::MAX;
+        let mut max_timestamp: u64 = 0;
         for result in csvrdr.deserialize() {
             db.rows += 1;
             let record: HashMap<String, String> = result.unwrap();
@@ -120,6 +124,8 @@ impl DB {
                     continue;
                 }
             };
+            min_timestamp = std::cmp::min(min_timestamp, timebin.time_bucket);
+            max_timestamp = std::cmp::max(max_timestamp, timebin.time_bucket);
             db.total_traffic += timebin.bytes_acked_sum;
             db.pathid2traffic
                 .entry(Rc::clone(&pid))
@@ -136,6 +142,11 @@ impl DB {
                 }
             };
         }
+        let seconds: u32 = (max_timestamp - min_timestamp) as u32;
+        db.total_bins = seconds / bin_duration_secs;
+        info!("DB rows={} paths={} seconds={} bins={} bytes={}", db.rows,
+        db.pathid2traffic.len(),seconds, db.total_bins, db.total_traffic);
+        info!("{:?}", db.error_counts);
         Ok(db)
     }
 }
@@ -271,6 +282,8 @@ fn string_to_hash_u64(string: &str) -> u64 {
 pub(crate) mod tests {
     use super::*;
 
+    const BIN_DURATION_SECS: u64 = 900;
+
     impl DB {
         pub fn insert(
             &mut self,
@@ -279,6 +292,7 @@ pub(crate) mod tests {
         ) -> Option<BTreeMap<u64, TimeBin>> {
             let rcpid: Rc<PathId> = Rc::new(pid);
             let path_traffic: u64 = time2bin.values().fold(0u64, |acc, e| acc + e.bytes_acked_sum);
+            self.total_bins = std::cmp::max(self.total_bins, time2bin.len() as u32);
             self.total_traffic += path_traffic;
             if let Some(traffic) = self.pathid2traffic.insert(Rc::clone(&rcpid), path_traffic) {
                 self.total_traffic -= traffic;
@@ -439,11 +453,10 @@ pub(crate) mod tests {
 
     #[test]
     fn test_db_insert() {
-        let bin_duration_secs: u64 = 900;
         let mut database: DB = DB::default();
 
         let time2bin =
-            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
+            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
         let nbins: u64 = time2bin.len() as u64;
 
         let pid1 = PathId {
@@ -454,7 +467,7 @@ pub(crate) mod tests {
         assert!(database.total_traffic == nbins * TimeBin::MOCK_TOTAL_BYTES);
 
         let time2bin =
-            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
+            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
@@ -463,7 +476,7 @@ pub(crate) mod tests {
         assert!(database.total_traffic == 2 * nbins * TimeBin::MOCK_TOTAL_BYTES);
 
         let time2bin =
-            TimeBin::mock_week_minrtt_p50(bin_duration_secs / 2, 50, 51, 100.0, 50, 51, 100.0);
+            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS / 2, 50, 51, 100.0, 50, 51, 100.0);
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
@@ -474,14 +487,13 @@ pub(crate) mod tests {
 
     #[test]
     fn test_timebin_mock_week() {
-        let bin_duration_secs: u64 = 900;
         let time2bin =
-            TimeBin::mock_week_minrtt_p50(bin_duration_secs, 50, 51, 100.0, 50, 51, 100.0);
-        assert!(time2bin.len() == (7 * 86400 / bin_duration_secs) as usize);
+            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
+        assert!(time2bin.len() == (7 * 86400 / BIN_DURATION_SECS) as usize);
         assert!(time2bin.values().fold(true, |_, e| e.num2route[0].is_some()));
         assert!(time2bin.values().fold(true, |_, e| e.num2route[1].is_some()));
         assert!(time2bin.values().fold(true, |_, e| e.num2route[2].is_none()));
-        assert!(*time2bin.keys().max().unwrap() == 7 * 86400 - bin_duration_secs);
+        assert!(*time2bin.keys().max().unwrap() == 7 * 86400 - BIN_DURATION_SECS);
     }
 
     #[test]
@@ -546,7 +558,7 @@ pub(crate) mod tests {
     #[ignore]
     fn test_load_db() -> Result<(), Box<dyn std::error::Error>> {
         let file = PathBuf::from("/home/cunha/data/FBPerformance/test/perf-3263.csv.gz");
-        let db = DB::from_file(&file)?;
+        let db = DB::from_file(&file, BIN_DURATION_SECS as u32)?;
         assert!(db.rows == 365_909);
         Ok(())
     }

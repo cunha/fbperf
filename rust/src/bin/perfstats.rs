@@ -23,6 +23,8 @@ struct Opt {
     #[structopt(long, parse(from_os_str))]
     /// The output directory where to store files
     outdir: PathBuf,
+    #[structopt(long, default_value = "900")]
+    bin_duration_secs: u32,
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
@@ -31,38 +33,30 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
     let max_hdratio_diff_ci_halfwidth: f32 = 0.1;
     let max_hdratio_var: f32 = 0.5;
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
-    for &no_alternate_is_valid in [true, false].iter() {
-        for &minrtt50_min_improv in [0, 5, 10].iter() {
-            let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
-                minrtt50_min_improv,
-                max_minrtt50_diff_ci_halfwidth,
-                no_alternate_is_valid,
-                compare_lower_bound: true,
-            });
-            summarizers.push(ml);
-        }
-        for &hdratio_min_improv in [0.0, 0.02, 0.05].iter() {
-            let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
-                hdratio_min_improv,
-                max_hdratio_diff_ci_halfwidth,
-                no_alternate_is_valid,
-                compare_lower_bound: true,
-            });
-            summarizers.push(hl);
-        }
-    }
-    for &min_minrtt50_diff_degradation in [0, 5, 10].iter() {
+    for &min_minrtt50_diff in [0, 5, 10].iter() {
+        let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
+            minrtt50_min_improv: min_minrtt50_diff,
+            max_minrtt50_diff_ci_halfwidth,
+            compare_lower_bound: true,
+        });
+        summarizers.push(ml);
         let ml = Box::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
-            min_minrtt50_diff_degradation,
+            min_minrtt50_diff,
             max_minrtt50_diff_ci_halfwidth,
             max_minrtt50_var,
             db,
         ));
         summarizers.push(ml);
     }
-    for &min_hdratio_diff_degradation in [0.0, 0.02, 0.05].iter() {
+    for &min_hdratio_diff in [0.0, 0.02, 0.05].iter() {
+        let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
+            hdratio_min_improv: min_hdratio_diff,
+            max_hdratio_diff_ci_halfwidth,
+            compare_lower_bound: true,
+        });
+        summarizers.push(hl);
         let hl = Box::new(summarizers::degradation::HdRatioLowerBoundDegradationSummarizer::new(
-            min_hdratio_diff_degradation,
+            min_hdratio_diff,
             max_hdratio_diff_ci_halfwidth,
             max_hdratio_var,
             db,
@@ -77,6 +71,8 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
+        min_frac_existing_bins: 0.6,
+        min_frac_bins_with_alternate: 0.6,
         min_frac_valid_bins: 0.6,
         continuous_min_frac_shifted_bins: 0.5,
         diurnal_min_bad_bins: 1,
@@ -86,15 +82,19 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
-        min_frac_valid_bins: 0.8,
+        min_frac_existing_bins: 0.6,
+        min_frac_bins_with_alternate: 0.6,
+        min_frac_valid_bins: 0.6,
         continuous_min_frac_shifted_bins: 0.5,
         diurnal_min_bad_bins: 1,
         diurnal_bad_bin_min_prob_shift: 0.75,
-        uneventful_max_frac_shifted_bins: 0.01,
+        uneventful_max_frac_shifted_bins: 0.0,
     });
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
+        min_frac_existing_bins: 0.6,
+        min_frac_bins_with_alternate: 0.6,
         min_frac_valid_bins: 0.6,
         continuous_min_frac_shifted_bins: 0.75,
         diurnal_min_bad_bins: 1,
@@ -104,11 +104,13 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
     configs.push(perfstats::TemporalConfig {
         bin_duration_secs: 900,
         min_days: 2,
-        min_frac_valid_bins: 0.8,
+        min_frac_existing_bins: 0.6,
+        min_frac_bins_with_alternate: 0.6,
+        min_frac_valid_bins: 0.6,
         continuous_min_frac_shifted_bins: 0.75,
         diurnal_min_bad_bins: 1,
         diurnal_bad_bin_min_prob_shift: 0.75,
-        uneventful_max_frac_shifted_bins: 0.01,
+        uneventful_max_frac_shifted_bins: 0.0,
     });
     configs
 }
@@ -117,7 +119,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let opts = Opt::from_args();
 
-    let db = db::DB::from_file(&opts.input)?;
+    let db = db::DB::from_file(&opts.input, opts.bin_duration_secs)?;
     info!("loaded DB with {} rows", db.rows);
     info!("db has {} paths, {} total traffic", db.pathid2traffic.len(), db.total_traffic);
 

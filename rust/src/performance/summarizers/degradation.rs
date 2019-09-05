@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::performance::db::{PathId, RouteInfo, TimeBin, DB};
-use crate::performance::perfstats::{TimeBinStats, TimeBinSummarizer};
+use crate::performance::perfstats::{TimeBinStats, TimeBinSummarizer, TimeBinSummary};
 
 /// Summarize MinRTT degradation over time comparing primary routes.
 ///
@@ -159,16 +159,16 @@ impl MinRtt50LowerBoundDegradationSummarizer {
 }
 
 impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
-    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> Option<TimeBinStats> {
+    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2bestroute.get(pathid), bin.get_primary_route()) {
-            (None, _) => None,
-            (_, None) => None,
+            (None, _) => TimeBinSummary::NoRoute,
+            (_, None) => TimeBinSummary::NoRoute,
             (Some(bestroute), Some(primary)) => {
                 let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(primary, bestroute);
                 if halfwidth > self.max_diff_ci_halfwidth {
-                    None
+                    TimeBinSummary::WideConfidenceInterval
                 } else {
-                    Some(TimeBinStats {
+                    TimeBinSummary::Valid(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
                         is_shifted: diff - halfwidth > f32::from(self.min_diff_degradation),
@@ -247,16 +247,16 @@ impl MinRtt50LowerBoundDistinctPathsDegradationSummarizer {
 }
 
 impl TimeBinSummarizer for MinRtt50LowerBoundDistinctPathsDegradationSummarizer {
-    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> Option<TimeBinStats> {
+    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2bestroute.get(pathid), bin.get_primary_route()) {
-            (None, _) => None,
-            (_, None) => None,
+            (None, _) => TimeBinSummary::NoRoute,
+            (_, None) => TimeBinSummary::NoRoute,
             (Some(bestroute), Some(primary)) => {
                 let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(primary, bestroute);
                 if halfwidth > self.max_diff_ci_halfwidth {
-                    None
+                    TimeBinSummary::WideConfidenceInterval
                 } else {
-                    Some(TimeBinStats {
+                    TimeBinSummary::Valid(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
                         is_shifted: diff - halfwidth > f32::from(self.min_diff_degradation),
@@ -323,16 +323,16 @@ impl HdRatioLowerBoundDegradationSummarizer {
 }
 
 impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
-    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> Option<TimeBinStats> {
+    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2bestroute.get(pathid), bin.get_primary_route()) {
-            (None, _) => None,
-            (_, None) => None,
+            (None, _) => TimeBinSummary::NoRoute,
+            (_, None) => TimeBinSummary::NoRoute,
             (Some(bestroute), Some(primary)) => {
                 let (diff, halfwidth) = RouteInfo::hdratio_diff_ci(bestroute, primary);
                 if halfwidth > self.max_diff_ci_halfwidth {
-                    None
+                    TimeBinSummary::WideConfidenceInterval
                 } else {
-                    Some(TimeBinStats {
+                    TimeBinSummary::Valid(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
                         is_shifted: diff - halfwidth > self.min_diff_degradation,
@@ -559,22 +559,26 @@ mod tests {
         assert!(sum.pathid2bestroute[&pid1].minrtt_ms_p50 == 50);
 
         let timebin = TimeBin::mock_minrtt_p50(0, 51, 51, 8.0);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_some());
-        let binstats = binstats.unwrap();
-        assert!(!binstats.is_shifted);
-        assert!((binstats.diff_ci - 1.0).abs() < 1e-6);
+        let binsum = sum.summarize(&pid1, &timebin);
+        if let TimeBinSummary::Valid(binstats) = binsum {
+            assert!(!binstats.is_shifted);
+            assert!((binstats.diff_ci - 1.0).abs() < 1e-6);
+        } else {
+            assert!(false);
+        }
 
         let timebin = TimeBin::mock_minrtt_p50(0, 60, 51, 8.0);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_some());
-        let binstats = binstats.unwrap();
-        assert!(binstats.is_shifted);
-        assert!((binstats.diff_ci - 10.0).abs() < 1e-6);
+        let binsum = sum.summarize(&pid1, &timebin);
+        if let TimeBinSummary::Valid(binstats) = binsum {
+            assert!(binstats.is_shifted);
+            assert!((binstats.diff_ci - 10.0).abs() < 1e-6);
+        } else {
+            assert!(false);
+        }
 
         let timebin = TimeBin::mock_minrtt_p50(0, 60, 51, 100.0);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_none());
+        let binsum = sum.summarize(&pid1, &timebin);
+        assert!(binsum == TimeBinSummary::WideConfidenceInterval);
     }
 
     #[test]
@@ -593,23 +597,27 @@ mod tests {
 
         // ci_halfwidth = 2 * (0.5/100 + 0.5/100).sqrt() = 0.2
         let timebin = TimeBin::mock_hdratio(0, 0.9, 0.8, 0.5);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_some());
-        let binstats = binstats.unwrap();
-        assert!(!binstats.is_shifted);
-        assert!((binstats.diff_ci - 0.05).abs() < 1e-6);
+        let binsum = sum.summarize(&pid1, &timebin);
+        if let TimeBinSummary::Valid(binstats) = binsum {
+            assert!(!binstats.is_shifted);
+            assert!((binstats.diff_ci - 0.05).abs() < 1e-6);
+        } else {
+            assert!(false);
+        }
 
         let timebin = TimeBin::mock_hdratio(0, 0.7, 0.8, 0.5);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_some());
-        let binstats = binstats.unwrap();
-        assert!(binstats.is_shifted);
-        assert!((binstats.diff_ci - 0.25).abs() < 1e-6);
+        let binsum = sum.summarize(&pid1, &timebin);
+        if let TimeBinSummary::Valid(binstats) = binsum {
+            assert!(binstats.is_shifted);
+            assert!((binstats.diff_ci - 0.25).abs() < 1e-6);
+        } else {
+            assert!(false);
+        }
 
         // ci_halfwidth = 2 * (0.5/100 + 0.8/100).sqrt() = 0.22
         let timebin = TimeBin::mock_hdratio(0, 0.7, 0.8, 0.8);
-        let binstats = sum.summarize(&pid1, &timebin);
-        assert!(binstats.is_none());
+        let binsum = sum.summarize(&pid1, &timebin);
+        assert!(binsum == TimeBinSummary::WideConfidenceInterval);
     }
 
 }
