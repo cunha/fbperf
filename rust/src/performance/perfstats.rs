@@ -43,12 +43,14 @@ pub struct TemporalConfig {
     pub uneventful_max_frac_shifted_bins: f32, // uneventful class
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DBSummary {
     pub pathid2summary: HashMap<Rc<db::PathId>, PathSummary>,
-    pub valid_bytes: u64,
-    behavior_valid_bytes: [u64; TemporalBehavior::SIZE as usize],
-    behavior_total_bytes: [u64; TemporalBehavior::SIZE as usize],
+    pub total_shifted_bytes: u64,
+    pub total_valid_bytes: u64,
+    shifted_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
+    valid_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
+    total_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
 }
 
 #[derive(Debug, Default)]
@@ -126,21 +128,33 @@ impl DBSummary {
             if psum.valid_bytes == 0 {
                 continue;
             }
-            dbsum.valid_bytes += psum.valid_bytes;
-            dbsum.behavior_valid_bytes[psum.temporal_behavior as usize] += psum.valid_bytes;
-            dbsum.behavior_total_bytes[psum.temporal_behavior as usize] += db.pathid2traffic[pid];
+            // dbsum.valid_bytes += psum.valid_bytes;
+            dbsum.shifted_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                psum.shifted_bytes;
+            dbsum.valid_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                psum.valid_bytes;
+            dbsum.total_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                db.pathid2traffic[pid];
             dbsum.pathid2summary.insert(Rc::clone(&pid), psum);
         }
         dbsum
     }
 
     pub fn reclassify(&mut self, db: &db::DB, tempconfig: &TemporalConfig) {
-        self.behavior_valid_bytes = [0u64; TemporalBehavior::SIZE as usize];
-        self.behavior_total_bytes = [0u64; TemporalBehavior::SIZE as usize];
+        self.shifted_bytes =
+            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
+        self.valid_bytes =
+            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
+        self.total_bytes =
+            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
         for (pid, psum) in self.pathid2summary.iter_mut() {
             psum.classify(db.total_bins, db.pathid2time2bin[pid].len() as u32, tempconfig);
-            self.behavior_valid_bytes[psum.temporal_behavior as usize] += psum.valid_bytes;
-            self.behavior_total_bytes[psum.temporal_behavior as usize] += db.pathid2traffic[pid];
+            self.shifted_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                psum.shifted_bytes;
+            self.valid_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                psum.valid_bytes;
+            self.total_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
+                db.pathid2traffic[pid];
         }
     }
 
@@ -242,18 +256,77 @@ impl DBSummary {
             .open(filepath)?;
         let mut bw = io::BufWriter::new(file);
 
-        let global: u64 = self.behavior_total_bytes.iter().sum::<u64>();
+        writeln!(bw, "key shifted valid total shifted/global valid/global total/global")?;
+        writeln!(bw)?;
 
-        writeln!(bw, "behavior valid total valid/total valid/global total/global")?;
-        for (i, valid) in self.behavior_valid_bytes.iter().enumerate() {
-            let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
-            let total: u64 = self.behavior_total_bytes[i];
-            write!(bw, "{:?} {} {}", behavior, valid, total)?;
-            let frac_valid_total: f32 = 100.0 * (*valid as f32) / (total as f32);
-            let frac_valid: f32 = 100.0 * (*valid as f32) / (global as f32);
-            let frac_total: f32 = 100.0 * (total as f32) / (global as f32);
-            write!(bw, " {:0.2} {:0.2} {:0.2}", frac_valid_total, frac_valid, frac_total)?;
+        let mut continent_shifted: Vec<u64> =
+            Vec::with_capacity(db::ClientContinent::SIZE as usize);
+        let mut continent_valid: Vec<u64> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
+        let mut continent_total: Vec<u64> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
+        for i in 0..(db::ClientContinent::SIZE as usize) {
+            continent_shifted.push(self.shifted_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
+            continent_valid.push(self.valid_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
+            continent_total.push(self.total_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
         }
+
+        let global_total: u64 = continent_total.iter().sum::<u64>();
+        assert!(continent_total.len() == db::ClientContinent::SIZE as usize);
+
+        for i in 0..(db::ClientContinent::SIZE as usize) {
+            let cont: db::ClientContinent = db::ClientContinent::try_from(i as u8).unwrap();
+            writeln!(
+                bw,
+                "{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
+                cont,
+                continent_shifted[i],
+                continent_valid[i],
+                continent_total[i],
+                continent_shifted[i] as f64 / global_total as f64,
+                continent_valid[i] as f64 / global_total as f64,
+                continent_total[i] as f64 / global_total as f64
+            )?;
+        }
+        writeln!(bw)?;
+
+        for i in 0..(TemporalBehavior::SIZE as usize) {
+            let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
+            let shifted: u64 = self.shifted_bytes[i].iter().sum::<u64>();
+            let valid: u64 = self.valid_bytes[i].iter().sum::<u64>();
+            let total: u64 = self.total_bytes[i].iter().sum::<u64>();
+            writeln!(
+                bw,
+                "{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
+                behavior,
+                shifted,
+                valid,
+                total,
+                shifted as f64 / global_total as f64,
+                valid as f64 / global_total as f64,
+                total as f64 / global_total as f64
+            )?;
+        }
+        writeln!(bw)?;
+
+        for i in 0..(TemporalBehavior::SIZE as usize) {
+            let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
+            for j in 0..(db::ClientContinent::SIZE as usize) {
+                let cont: db::ClientContinent = db::ClientContinent::try_from(j as u8).unwrap();
+                writeln!(
+                    bw,
+                    "{:?}+{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
+                    behavior,
+                    cont,
+                    self.shifted_bytes[i][j],
+                    self.valid_bytes[i][j],
+                    self.total_bytes[i][j],
+                    self.shifted_bytes[i][j] as f64 / global_total as f64,
+                    self.valid_bytes[i][j] as f64 / global_total as f64,
+                    self.total_bytes[i][j] as f64 / global_total as f64
+                )?;
+            }
+            writeln!(bw)?;
+        }
+
         Ok(())
     }
 }
@@ -404,10 +477,7 @@ mod tests {
 
     #[test]
     fn test_path_summary_no_valid() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 2,
@@ -446,10 +516,7 @@ mod tests {
 
     #[test]
     fn test_path_summary_all_valid_no_shifts() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
@@ -493,10 +560,7 @@ mod tests {
 
     #[test]
     fn test_path_summary_all_valid_all_shifts() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
@@ -541,10 +605,7 @@ mod tests {
 
     #[test]
     fn test_path_summary_half_valid_no_shifts() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
@@ -588,10 +649,7 @@ mod tests {
 
     #[test]
     fn test_path_summary_half_valid_all_shifts() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
@@ -641,10 +699,7 @@ mod tests {
 
     #[test]
     fn test_continuous() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
@@ -671,10 +726,7 @@ mod tests {
 
     #[test]
     fn test_diurnal_num_bad_bins() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
@@ -700,10 +752,7 @@ mod tests {
 
     #[test]
     fn test_diurnal_min_prob_shift() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
@@ -735,10 +784,7 @@ mod tests {
 
     #[test]
     fn test_undersampled() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: String::from("gru"),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
@@ -781,34 +827,31 @@ mod tests {
         let time2bin1 =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 55, 50, 0.001);
         let nbins: u64 = time2bin1.len() as u64;
-        let pid1 = db::PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let pid1: db::PathId = db::tests::make_path_id();
         let time2bin2 =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 55, 50, 0.001);
         let pid2 = db::PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
+            client_continent: db::ClientContinent::Unknown,
         };
         assert!(database.insert(pid1.clone(), time2bin1).is_none());
         assert!(database.insert(pid2.clone(), time2bin2).is_none());
 
         let mut dbsum: DBSummary = DBSummary::build(&database, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(dbsum.pathid2summary.len() == 2);
-        assert!(dbsum.valid_bytes == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 3 / 2);
         assert!(dbsum.pathid2summary[&pid1].temporal_behavior == TemporalBehavior::Diurnal);
         assert!(dbsum.pathid2summary[&pid2].temporal_behavior == TemporalBehavior::Undersampled);
         assert!(
-            dbsum.behavior_valid_bytes[TemporalBehavior::Diurnal as usize]
+            dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u64>()
                 == nbins * db::TimeBin::MOCK_TOTAL_BYTES
         );
         assert!(
-            dbsum.behavior_valid_bytes[TemporalBehavior::Undersampled as usize]
+            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>()
                 == nbins * db::TimeBin::MOCK_TOTAL_BYTES / 2
         );
         assert!(
-            dbsum.behavior_total_bytes[TemporalBehavior::Undersampled as usize]
+            dbsum.total_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>()
                 == nbins * db::TimeBin::MOCK_TOTAL_BYTES
         );
 
@@ -817,17 +860,18 @@ mod tests {
         config.min_frac_valid_bins = 0.4;
         dbsum.reclassify(&database, &config);
         assert!(dbsum.pathid2summary.len() == 2);
-        assert!(dbsum.valid_bytes == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 3 / 2);
         assert!(dbsum.pathid2summary[&pid1].temporal_behavior == TemporalBehavior::Continuous);
         assert!(dbsum.pathid2summary[&pid2].temporal_behavior == TemporalBehavior::Continuous);
         assert!(
-            dbsum.behavior_valid_bytes[TemporalBehavior::Continuous as usize]
+            dbsum.valid_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u64>()
                 == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 3 / 2
         );
-        assert!(dbsum.behavior_valid_bytes[TemporalBehavior::Diurnal as usize] == 0);
-        assert!(dbsum.behavior_valid_bytes[TemporalBehavior::Undersampled as usize] == 0);
+        assert!(dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u64>() == 0);
         assert!(
-            dbsum.behavior_total_bytes[TemporalBehavior::Continuous as usize]
+            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>() == 0
+        );
+        assert!(
+            dbsum.total_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u64>()
                 == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 2
         );
     }

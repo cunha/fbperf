@@ -1,5 +1,5 @@
 use crate::performance::db::{PathId, RouteInfo, TimeBin};
-use crate::performance::perfstats::{TimeBinSummary, TimeBinStats, TimeBinSummarizer};
+use crate::performance::perfstats::{TimeBinStats, TimeBinSummarizer, TimeBinSummary};
 
 #[derive(Clone, Copy, Debug)]
 pub struct MinRtt50ImprovementSummarizer {
@@ -43,9 +43,7 @@ impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
     fn prefix(&self) -> String {
         format!(
             "minrtt50--opp--bound-{}--halfwidth-{:0.2}--min-improv-{}",
-            self.compare_lower_bound,
-            self.max_minrtt50_diff_ci_halfwidth,
-            self.minrtt50_min_improv,
+            self.compare_lower_bound, self.max_minrtt50_diff_ci_halfwidth, self.minrtt50_min_improv,
         )
     }
 }
@@ -78,9 +76,7 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
     fn prefix(&self) -> String {
         format!(
             "hdratio--opp--bound-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
-            self.compare_lower_bound,
-            self.max_hdratio_diff_ci_halfwidth,
-            self.hdratio_min_improv,
+            self.compare_lower_bound, self.max_hdratio_diff_ci_halfwidth, self.hdratio_min_improv,
         )
     }
 }
@@ -93,10 +89,7 @@ mod tests {
 
     #[test]
     fn test_minrtt_p50_lower_bound() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 0,
@@ -111,7 +104,7 @@ mod tests {
             assert!(!binstats.is_shifted);
             assert!((binstats.diff_ci - 5.0).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
 
         timebin.num2route[1] = None;
@@ -122,10 +115,7 @@ mod tests {
 
     #[test]
     fn test_minrtt_p50_lower_bound_valid() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum1 = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 0,
@@ -149,7 +139,7 @@ mod tests {
             assert!(binstats.is_shifted);
             assert!((binstats.diff_ci - 10.0).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
 
         let timebin = db::TimeBin::mock_minrtt_p50(0, 15, 10, 8.0);
@@ -159,16 +149,13 @@ mod tests {
             assert!(!binstats.is_shifted);
             assert!((binstats.diff_ci - 5.0).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
     }
 
     #[test]
     fn test_hdratio_lower_bound() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum = HdRatioImprovementSummarizer {
             hdratio_min_improv: 0.0,
@@ -185,7 +172,7 @@ mod tests {
             assert!((binstats.diff_ci - 0.1).abs() < 1e-6);
             assert!((binstats.diff_ci_halfwidth - 0.2).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
 
         timebin.num2route[1] = None;
@@ -196,10 +183,7 @@ mod tests {
 
     #[test]
     fn test_hdratio_lower_bound_valid() {
-        let _pathid: db::PathId = db::PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum1 = HdRatioImprovementSummarizer {
             hdratio_min_improv: 0.0,
@@ -224,7 +208,7 @@ mod tests {
             assert!((binstats.diff_ci - 0.25).abs() < 1e-6);
             assert!((binstats.diff_ci_halfwidth - 0.2).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
 
         let timebin = db::TimeBin::mock_hdratio(0, 0.8, 0.95, 0.5);
@@ -235,7 +219,7 @@ mod tests {
             assert!((binstats.diff_ci - 0.15).abs() < 1e-6);
             assert!((binstats.diff_ci_halfwidth - 0.2).abs() < 1e-6);
         } else {
-            assert!(false);
+            unreachable!();
         }
     }
 }

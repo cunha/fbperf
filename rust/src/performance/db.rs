@@ -6,10 +6,12 @@ use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::str::FromStr;
 
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
 use log::{debug, error, info};
+use num_enum::TryFromPrimitive;
 
 mod error;
 use error::{ParseError, ParseErrorKind};
@@ -30,6 +32,19 @@ pub enum PeerType {
     Transit,
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, TryFromPrimitive)]
+pub enum ClientContinent {
+    AF = 0,
+    AS = 1,
+    EU = 2,
+    NA = 3,
+    OC = 4,
+    SA = 5,
+    Unknown = 6,
+    SIZE = 7,
+}
+
 #[derive(Default)]
 pub struct DB {
     pub pathid2time2bin: HashMap<Rc<PathId>, BTreeMap<u64, TimeBin>>,
@@ -44,6 +59,7 @@ pub struct DB {
 pub struct PathId {
     pub vip_metro: String,
     pub bgp_ip_prefix: IpNet,
+    pub client_continent: ClientContinent,
 }
 
 #[derive(Clone, Debug)]
@@ -144,8 +160,14 @@ impl DB {
         }
         let seconds: u32 = (max_timestamp - min_timestamp) as u32;
         db.total_bins = seconds / bin_duration_secs;
-        info!("DB rows={} paths={} seconds={} bins={} bytes={}", db.rows,
-        db.pathid2traffic.len(),seconds, db.total_bins, db.total_traffic);
+        info!(
+            "DB rows={} paths={} seconds={} bins={} bytes={}",
+            db.rows,
+            db.pathid2traffic.len(),
+            seconds,
+            db.total_bins,
+            db.total_traffic
+        );
         info!("{:?}", db.error_counts);
         Ok(db)
     }
@@ -162,6 +184,7 @@ impl PathId {
             Ok(PathId {
                 vip_metro: record["vip_metro"].to_string(),
                 bgp_ip_prefix: record["bgp_ip_prefix"].parse::<IpNet>()?,
+                client_continent: record["client_continent"].parse::<ClientContinent>().unwrap(),
             })
         }
     }
@@ -268,6 +291,22 @@ impl RouteInfo {
     }
 }
 
+impl FromStr for ClientContinent {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "AF" => Ok(ClientContinent::AF),
+            "AS" => Ok(ClientContinent::AS),
+            "EU" => Ok(ClientContinent::EU),
+            "NA" => Ok(ClientContinent::NA),
+            "OC" => Ok(ClientContinent::OC),
+            "SA" => Ok(ClientContinent::SA),
+            _ => Ok(ClientContinent::Unknown),
+        }
+    }
+}
+
 fn string_to_bool(s: &str) -> bool {
     ["ok", "Ok", "OK", "true", "True", "false", "False", "0", "1"].contains(&s)
 }
@@ -283,6 +322,14 @@ pub(crate) mod tests {
     use super::*;
 
     const BIN_DURATION_SECS: u64 = 900;
+
+    pub fn make_path_id() -> PathId {
+        PathId {
+            vip_metro: String::from("gru"),
+            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
+            client_continent: ClientContinent::Unknown,
+        }
+    }
 
     impl DB {
         pub fn insert(
@@ -459,10 +506,7 @@ pub(crate) mod tests {
             TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
         let nbins: u64 = time2bin.len() as u64;
 
-        let pid1 = PathId {
-            vip_metro: "gru".to_string(),
-            bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
-        };
+        let pid1 = make_path_id();
         assert!(database.insert(pid1, time2bin).is_none());
         assert!(database.total_traffic == nbins * TimeBin::MOCK_TOTAL_BYTES);
 
@@ -471,6 +515,7 @@ pub(crate) mod tests {
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
+            client_continent: ClientContinent::Unknown,
         };
         assert!(database.insert(pid2, time2bin).is_none());
         assert!(database.total_traffic == 2 * nbins * TimeBin::MOCK_TOTAL_BYTES);
@@ -480,6 +525,7 @@ pub(crate) mod tests {
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
+            client_continent: ClientContinent::Unknown,
         };
         assert!(database.insert(pid2, time2bin).is_some());
         assert!(database.total_traffic == 3 * nbins * TimeBin::MOCK_TOTAL_BYTES);

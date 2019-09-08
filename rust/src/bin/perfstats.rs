@@ -33,7 +33,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
     let max_hdratio_diff_ci_halfwidth: f32 = 0.1;
     let max_hdratio_var: f32 = 0.5;
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
-    for &min_minrtt50_diff in [0, 5, 10].iter() {
+    for &min_minrtt50_diff in [0, 5, 10, 20, 50].iter() {
         let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: min_minrtt50_diff,
             max_minrtt50_diff_ci_halfwidth,
@@ -41,6 +41,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         });
         summarizers.push(ml);
         let ml = Box::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
+            0.1,
             min_minrtt50_diff,
             max_minrtt50_diff_ci_halfwidth,
             max_minrtt50_var,
@@ -48,7 +49,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         ));
         summarizers.push(ml);
     }
-    for &min_hdratio_diff in [0.0, 0.02, 0.05].iter() {
+    for &min_hdratio_diff in [0.0, 0.02, 0.05, 0.1, 0.2].iter() {
         let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
             hdratio_min_improv: min_hdratio_diff,
             max_hdratio_diff_ci_halfwidth,
@@ -56,6 +57,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         });
         summarizers.push(hl);
         let hl = Box::new(summarizers::degradation::HdRatioLowerBoundDegradationSummarizer::new(
+            0.9,
             min_hdratio_diff,
             max_hdratio_diff_ci_halfwidth,
             max_hdratio_var,
