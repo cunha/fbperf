@@ -6,7 +6,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use log::info;
 use num_enum::TryFromPrimitive;
+use serde_pickle;
 
 use crate::cdf;
 use crate::performance::db;
@@ -456,6 +458,8 @@ impl DBSummary {
     }
 
     fn dump_temporal_tables(&self, path: &PathBuf) -> Result<(), io::Error> {
+        let mut key2data: BTreeMap<String, (u64, u64, u64, f64, f64, f64)> = BTreeMap::new();
+
         let mut filepath = path.clone();
         filepath.push("temporal-behavior-table.txt");
         let file = fs::OpenOptions::new()
@@ -465,9 +469,6 @@ impl DBSummary {
             .create(true)
             .open(filepath)?;
         let mut bw = io::BufWriter::new(file);
-
-        writeln!(bw, "key shifted valid total shifted/global valid/global total/global")?;
-        writeln!(bw)?;
 
         let mut continent_shifted: Vec<u64> =
             Vec::with_capacity(db::ClientContinent::SIZE as usize);
@@ -484,36 +485,41 @@ impl DBSummary {
 
         for i in 0..(db::ClientContinent::SIZE as usize) {
             let cont: db::ClientContinent = db::ClientContinent::try_from(i as u8).unwrap();
-            writeln!(
-                bw,
-                "{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
-                cont,
+            let name: String = format!("{:?}", cont);
+            let data = (
                 continent_shifted[i],
                 continent_valid[i],
                 continent_total[i],
                 continent_shifted[i] as f64 / global_total as f64,
                 continent_valid[i] as f64 / global_total as f64,
-                continent_total[i] as f64 / global_total as f64
+                continent_total[i] as f64 / global_total as f64,
+            );
+            writeln!(
+                bw,
+                "{} {} {} {} {:0.3} {:0.3} {:0.3}",
+                name, data.0, data.1, data.2, data.3, data.4, data.5
             )?;
+            key2data.insert(name, data);
         }
         writeln!(bw)?;
 
         for i in 0..(TemporalBehavior::SIZE as usize) {
             let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
-            let shifted: u64 = self.shifted_bytes[i].iter().sum::<u64>();
-            let valid: u64 = self.valid_bytes[i].iter().sum::<u64>();
-            let total: u64 = self.total_bytes[i].iter().sum::<u64>();
+            let name: String = format!("{:?}", behavior);
+            let data = (
+                self.shifted_bytes[i].iter().sum::<u64>(),
+                self.valid_bytes[i].iter().sum::<u64>(),
+                self.total_bytes[i].iter().sum::<u64>(),
+                self.shifted_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
+                self.valid_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
+                self.total_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
+            );
             writeln!(
                 bw,
-                "{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
-                behavior,
-                shifted,
-                valid,
-                total,
-                shifted as f64 / global_total as f64,
-                valid as f64 / global_total as f64,
-                total as f64 / global_total as f64
+                "{} {} {} {} {:0.3} {:0.3} {:0.3}",
+                name, data.0, data.1, data.2, data.3, data.4, data.5
             )?;
+            key2data.insert(name, data);
         }
         writeln!(bw)?;
 
@@ -521,21 +527,36 @@ impl DBSummary {
             let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
             for j in 0..(db::ClientContinent::SIZE as usize) {
                 let cont: db::ClientContinent = db::ClientContinent::try_from(j as u8).unwrap();
-                writeln!(
-                    bw,
-                    "{:?}+{:?} {} {} {} {:0.3} {:0.3} {:0.3}",
-                    behavior,
-                    cont,
+                let name: String = format!("{:?}+{:?}", behavior, cont);
+                let data = (
                     self.shifted_bytes[i][j],
                     self.valid_bytes[i][j],
                     self.total_bytes[i][j],
                     self.shifted_bytes[i][j] as f64 / global_total as f64,
                     self.valid_bytes[i][j] as f64 / global_total as f64,
-                    self.total_bytes[i][j] as f64 / global_total as f64
+                    self.total_bytes[i][j] as f64 / global_total as f64,
+                );
+                writeln!(
+                    bw,
+                    "{} {} {} {} {:0.3} {:0.3} {:0.3}",
+                    name, data.0, data.1, data.2, data.3, data.4, data.5
                 )?;
+                key2data.insert(name, data);
             }
             writeln!(bw)?;
         }
+
+        let mut filepath = path.clone();
+        filepath.push("temporal-behavior.pickle");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(filepath)?;
+        let mut bw = io::BufWriter::new(file);
+        serde_pickle::to_writer(&mut bw, &key2data, true)
+            .unwrap_or_else(|_| info!("could not dump table as pickle"));
 
         Ok(())
     }

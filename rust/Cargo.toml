@@ -17,5 +17,6 @@ ipnet = { version = ">=2", features = ["serde"] }
 log = ">=0.4"
 num_enum = ">=0.4"
 serde = { version = ">=1", features = ["derive"] }
+serde-pickle = ">= 0.5"
 structopt = ">= 0.2"
 treebitmap = ">= 0.4"
