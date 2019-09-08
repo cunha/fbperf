@@ -1,4 +1,4 @@
-use crate::performance::db::{PathId, RouteInfo, TimeBin};
+use crate::performance::db::{PathId, RouteInfo, TimeBin, DB};
 use crate::performance::perfstats::{TimeBinStats, TimeBinSummarizer, TimeBinSummary};
 
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +40,18 @@ impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
             }
         }
     }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        let bin = &db.pathid2time2bin[pathid][&time];
+        (
+            bin.get_primary_route().as_ref().unwrap(),
+            bin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap(),
+        )
+    }
     fn prefix(&self) -> String {
         format!(
             "minrtt50--opp--bound-{}--halfwidth-{:0.2}--min-improv-{}",
@@ -72,6 +84,18 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
                 }
             }
         }
+    }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        let bin = &db.pathid2time2bin[pathid][&time];
+        (
+            bin.get_primary_route().as_ref().unwrap(),
+            bin.get_best_alternate(RouteInfo::compare_hdratio).as_ref().unwrap(),
+        )
     }
     fn prefix(&self) -> String {
         format!(

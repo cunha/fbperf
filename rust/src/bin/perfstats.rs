@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             if i > 0 {
                 dbsum.reclassify(&db, tempcfg);
             }
-            dbsum.dump(&dir)?;
+            dbsum.dump(&dir, &db, summarizer.borrow())?;
             tempcfg.dump(&dir)?;
         }
     }

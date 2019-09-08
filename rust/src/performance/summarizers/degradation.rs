@@ -33,7 +33,7 @@ pub struct MinRtt50LowerBoundDegradationSummarizer {
     /// This stores the primary `RouteInfo` for the best `TimeBin` for
     /// each `PathId`, chosen based on the thresholds above. `PathId`s
     /// without a valid best `TimeBin` are not included in the mapping.
-    pathid2baseroute: HashMap<Rc<PathId>, RouteInfo>,
+    pathid2baseroute: HashMap<Rc<PathId>, Box<RouteInfo>>,
 }
 
 /// Summarize HD-ratio degradation over time comparing primary routes.
@@ -65,7 +65,7 @@ pub struct HdRatioLowerBoundDegradationSummarizer {
     /// This stores the primary `RouteInfo` for the best `TimeBin` for
     /// each `PathId`, chosen based on the thresholds above. `PathId`s
     /// without a valid best `TimeBin` are not included in the mapping.
-    pathid2baseroute: HashMap<Rc<PathId>, RouteInfo>,
+    pathid2baseroute: HashMap<Rc<PathId>, Box<RouteInfo>>,
 }
 
 impl MinRtt50LowerBoundDegradationSummarizer {
@@ -100,7 +100,7 @@ impl MinRtt50LowerBoundDegradationSummarizer {
                 continue;
             }
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
-            sum.pathid2baseroute.insert(Rc::clone(&pathid), valid[i]);
+            sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
         }
         sum
     }
@@ -125,6 +125,17 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
                 }
             }
         }
+    }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        (
+            &self.pathid2baseroute[pathid],
+            &db.pathid2time2bin[pathid][&time].get_primary_route().as_ref().unwrap(),
+        )
     }
     fn prefix(&self) -> String {
         format!(
@@ -166,7 +177,7 @@ impl HdRatioLowerBoundDegradationSummarizer {
                 continue;
             }
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
-            sum.pathid2baseroute.insert(Rc::clone(&pathid), valid[i]);
+            sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
         }
         sum
     }
@@ -191,6 +202,17 @@ impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
                 }
             }
         }
+    }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        (
+            &self.pathid2baseroute[pathid],
+            &db.pathid2time2bin[pathid][&time].get_primary_route().as_ref().unwrap(),
+        )
     }
     fn prefix(&self) -> String {
         format!(
