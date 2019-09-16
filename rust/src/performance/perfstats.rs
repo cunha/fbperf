@@ -24,6 +24,48 @@ pub trait TimeBinSummarizer {
     fn prefix(&self) -> String;
 }
 
+/// Classes of temporal behavior over time.
+///
+/// The `MissingBins` class includes `PathId`s monitored less than 60%
+/// of the time in the dataset. This class captures `PathId`s with
+/// extremely low traffic volumes or that do not have traffic during all
+/// periods (e.g., due to Facebook’s Cartographer [@shuff15cartographer]
+/// redirecting clients to different PoPs).
+///
+/// The `NoRoute` class (applies only when computing opportunity and)
+/// includes `PathId`s with alternate routes for less than 60% of the
+/// valid `TimeBin`s. This class captures `PathId`s that do not have
+/// alternate routes.
+///
+/// The *undersampled* class includes `PathId`s with less than 60% valid
+/// `TimeBin`s in degradation/opportunity calculations. For each
+/// `TimeBin`, we consider a degradation/opportunity calculation to be
+/// valid if the confidence interval of the degradation/opportunity is
+/// smaller than a configurable threshold (configured in the
+/// `TimeBinSummarizer`). This class captures `PathId`s with lower
+/// traffic volumes, fewer samples, and larger confidence intervals; it
+/// also captures prefixes whose client populations have highly variable
+/// performance (e.g., prefixes used by global VPN providers).
+///
+/// The *uneventful* class includes `PathId`s where less than 1% of
+/// valid `TimeBin`s have degradation/opportunity. This class captures
+/// `PathId`s where performance is stable over time (no degradation) or
+/// the preferred route is consistently better than the best alternate
+/// route (no opportunity).
+///
+/// The *persistent* class includes `PathId`s with degradation/
+/// opportunity for at least 50% of the time. This class captures
+/// `PathId`s with frequent degradation or where the alternate route is
+/// often better than the preferred route.
+///
+/// The *diurnal* class includes `PathId`s with degradation opportunity
+/// for at least one fixed 15-minute period (e.g., 11:00--11:15) in at
+/// least X days. This class captures `PathId`s where there is
+/// degradation/opportunity for part of the day over multiple days.
+///
+/// The *episodic* class includes all remaining `PathId`s. This class
+/// captures `PathId`s that have some degradation/opportunity but do not
+/// fit into the consistent or diurnal classes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
 #[repr(u8)]
 pub enum TemporalBehavior {
@@ -41,8 +83,8 @@ pub enum TemporalBehavior {
 #[derive(Clone, Copy, Debug)]
 pub struct TemporalConfig {
     pub bin_duration_secs: u32,
-    pub min_days: u32,                         // rando class
-    pub min_frac_existing_bins: f32,           // rando class
+    pub min_days: u32,                         // missing class
+    pub min_frac_existing_bins: f32,           // missing class
     pub min_frac_bins_with_alternate: f32,     // no alternate class
     pub min_frac_valid_bins: f32,              // undersampled class
     pub continuous_min_frac_shifted_bins: f32, // persistent class
@@ -134,9 +176,9 @@ impl DBSummary {
         let mut dbsum = DBSummary::default();
         for (pid, time2bin) in &db.pathid2time2bin {
             let psum = PathSummary::build(&pid, time2bin, db.total_bins, summarizer, tempconfig);
-            if psum.valid_bytes == 0 {
-                continue;
-            }
+            // if psum.valid_bytes == 0 {
+            //     continue;
+            // }
             // dbsum.valid_bytes += psum.valid_bytes;
             dbsum.shifted_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
                 psum.shifted_bytes;
@@ -397,15 +439,23 @@ impl DBSummary {
         let mut fpath = path.clone();
         fpath.push("frac_shifted_bins_paths.cdf");
         self.dump_path_cdf(&fpath, |_pathid, ps: &PathSummary| {
-            Some(((ps.shifted_bins as f32) / (ps.time2binstats.len() as f32), 1.0))
+            if ps.time2binstats.is_empty() {
+                None
+            } else {
+                Some(((ps.shifted_bins as f32) / (ps.time2binstats.len() as f32), 1.0))
+            }
         })?;
         let mut fpath = path.clone();
         fpath.push("frac_shifted_bins_paths_weighted.cdf");
         self.dump_path_cdf(&fpath, |_pathid, ps: &PathSummary| {
-            Some((
-                (ps.shifted_bins as f32) / (ps.time2binstats.len() as f32),
-                ps.valid_bytes as f32,
-            ))
+            if ps.time2binstats.is_empty() || ps.valid_bytes == 0 {
+                None
+            } else {
+                Some((
+                    (ps.shifted_bins as f32) / (ps.time2binstats.len() as f32),
+                    ps.valid_bytes as f32,
+                ))
+            }
         })?;
 
         // This code assumes that the dataset has "full days" (otherwise
@@ -413,15 +463,23 @@ impl DBSummary {
         let mut fpath = path.clone();
         fpath.push("average_shifts_per_day_paths.cdf");
         self.dump_path_cdf(&fpath, |_pathid, ps: &PathSummary| {
-            Some(((ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32), 1.0))
+            if ps.day2shifts.is_empty() {
+                None
+            } else {
+                Some(((ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32), 1.0))
+            }
         })?;
         let mut fpath = path.clone();
         fpath.push("average_shifts_per_day_paths_weighted.cdf");
         self.dump_path_cdf(&fpath, |_pathid, ps: &PathSummary| {
-            Some((
-                (ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32),
-                ps.valid_bytes as f32,
-            ))
+            if ps.day2shifts.is_empty() || ps.valid_bytes == 0 {
+                None
+            } else {
+                Some((
+                    (ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32),
+                    ps.valid_bytes as f32,
+                ))
+            }
         })?;
 
         Ok(())
@@ -525,16 +583,16 @@ impl DBSummary {
 
         for i in 0..(TemporalBehavior::SIZE as usize) {
             let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
-            for j in 0..(db::ClientContinent::SIZE as usize) {
+            for (j, &curr_cont_total) in continent_total.iter().enumerate() {
                 let cont: db::ClientContinent = db::ClientContinent::try_from(j as u8).unwrap();
                 let name: String = format!("{:?}+{:?}", behavior, cont);
                 let data = (
                     self.shifted_bytes[i][j],
                     self.valid_bytes[i][j],
                     self.total_bytes[i][j],
-                    self.shifted_bytes[i][j] as f64 / global_total as f64,
-                    self.valid_bytes[i][j] as f64 / global_total as f64,
-                    self.total_bytes[i][j] as f64 / global_total as f64,
+                    self.shifted_bytes[i][j] as f64 / curr_cont_total as f64,
+                    self.valid_bytes[i][j] as f64 / curr_cont_total as f64,
+                    self.total_bytes[i][j] as f64 / curr_cont_total as f64,
                 );
                 writeln!(
                     bw,
@@ -620,7 +678,7 @@ impl PathSummary {
             return;
         }
         let valid_bins: f32 = self.time2binstats.len() as f32;
-        let frac_valid: f32 = valid_bins / total_bins as f32;
+        let frac_valid: f32 = valid_bins / existing_bins as f32;
         if frac_valid < config.min_frac_valid_bins {
             self.temporal_behavior = TemporalBehavior::Undersampled;
             return;

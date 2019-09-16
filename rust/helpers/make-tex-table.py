@@ -1,30 +1,17 @@
 #!/usr/bin/env python3
 
 import argparse
-import bisect
+from collections import defaultdict
 import logging
 import pathlib
+import pickle
 import re
 import resource
 import sys
-from typing import List, Mapping, Tuple
-
-import matplotlib.pyplot as plt
-
-
-def readcdf(fpath):
-    logging.info("reading cdf from %s", str(fpath))
-    cdf = list()
-    with open(fpath) as fd:
-        for line in fd:
-            x, y = line.split()
-            cdf.append((float(x), float(y)))
-    logging.info("cdf has %d points", len(cdf))
-    return cdf
 
 
 def create_parser():
-    desc = """Plot CDF of performance differences including CIs"""
+    desc = """Dump TeX table"""
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument(
         "--basepath",
@@ -58,6 +45,53 @@ def create_parser():
     return parser
 
 
+METRIC_NAME = {"minrtt50": "\\minrtt", "hdratio": "\\hdratio"}
+SUMMARIZER_NAME = {"deg": "\\textsc{Degradation}", "opp": "\\textsc{Opportunity}"}
+
+TEMPORAL_BEHAVIORS = [
+    "MissingBins",
+    "NoRoute",
+    "Undersampled",
+    "Uneventful",
+    "Continuous",
+    "Diurnal",
+    "Episodic",
+]
+
+TEMPORAL_IGNORE_SHIFTS = ["MissingBins", "NoRoute", "Undersampled", "Uneventful"]
+
+CLIENT_CONTINENTS = ["AF", "AS", "EU", "NA", "OC", "SA"]
+
+SUMMARIZER_METRIC_THRESH = {
+    "opp": {"minrtt50": [5.0], "hdratio": [0.02]},
+    "deg": {"minrtt50": [5.0, 10.0, 20.0], "hdratio": [0.02, 0.05, 0.10]},
+}
+
+TEMPORAL_VALID = ["Uneventful", "Continuous", "Diurnal", "Episodic"]
+TEMPORAL_HAS_SHIFTS = ["Continuous", "Diurnal", "Episodic"]
+
+
+def make_thresh2cont2valid(thresh2name2tuple):
+    thresh2cont2valid = defaultdict(dict)
+    for t, name2tuple in thresh2name2tuple.items():
+        for cont in CLIENT_CONTINENTS:
+            getname = lambda temp: f"{temp}+{cont}"
+            print(name2tuple)
+            print(getname("Uneventful"))
+            print(name2tuple[getname("Uneventful")])
+            valid = sum(name2tuple[getname(temp)][1] for temp in TEMPORAL_VALID)
+            thresh2cont2valid[t][cont] = valid
+    return thresh2cont2valid
+
+
+def make_thresh2valid(thresh2name2tuple):
+    thresh2valid = dict()
+    for t, name2tuple in thresh2name2tuple.items():
+        valid = sum(name2tuple[temp][1] for temp in TEMPORAL_VALID)
+        thresh2valid[t] = valid
+    return thresh2valid
+
+
 def main():
     resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
     resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 30, 1 << 30))
@@ -67,189 +101,147 @@ def main():
     parser = create_parser()
     opts = parser.parse_args()
 
+    metric2thresh = {"minrtt50": opts.minrtt_thresh, "hdratio": opts.hdratio_thresh}
+    summarizer2threshstr = {"deg": "min-deg", "opp": "min-improv"}
+
+    w = sys.stdout.write
     for tempdir in opts.basepath.glob("tempconfig*"):
-        logging.info("entering %s", tempdir.name)
-        for subdir in tempdir.glob("minrtt50--opp*"):
-            if subdir.is_dir():
-                # Second dash is a minus sign
-                xlabel = "MinRTT Difference [Preferred - Alternate]"
-                xlim = (-20, 20)
-                labels = [
-                    ((xlim[0] + 1, 0.25), "left", "Preferred\nis better"),
-                    ((xlim[1] - 1, 0.75), "right", "Alternate\nis better"),
-                ]
-                logging.info("plotting diff CIs for minrtt50--opp")
-                plot_ci_cdfs(subdir, xlabel, xlim, labels)
-        for subdir in tempdir.glob("minrtt50--deg*"):
-            if subdir.is_dir():
-                xlabel = "MinRTT Degradation [Current − Best]"
-                xlim = (0, 30)
-                labels = []
-                logging.info("plotting diff CIs for minrtt50--deg")
-                plot_ci_cdfs(subdir, xlabel, xlim, labels)
-        for subdir in tempdir.glob("hdratio--opp*"):
-            if subdir.is_dir():
-                xlabel = "HD-Ratio Difference [Alternate − Preferred]"
-                xlim = (-0.20, 0.20)
-                labels = [
-                    ((xlim[0] + 0.01, 0.25), "left", "Preferred\nis better"),
-                    ((xlim[1] - 0.01, 0.75), "right", "Alternate\nis better"),
-                ]
-                logging.info("plotting diff CIs for hdratio--opp")
-                plot_ci_cdfs(subdir, xlabel, xlim, labels)
-        for subdir in tempdir.glob("hdratio--deg*"):
-            if subdir.is_dir():
-                xlabel = "HD-Ratio Degradation [Best − Current]"
-                xlim = (0, 0.3)
-                labels = []
-                logging.info("plotting diff CIs for hdratio-deg")
-                plot_ci_cdfs(subdir, xlabel, xlim, labels)
-        plot_path_cdfs(
-            tempdir,
-            "minrtt50--deg",
-            "Degradation > {}ms",
-            "min-deg",
-            opts.minrtt_thresh,
-        )
-        plot_path_cdfs(
-            tempdir,
-            "minrtt50--opp",
-            "Improvement > {}ms",
-            "min-improv",
-            opts.minrtt_thresh,
-        )
-        plot_path_cdfs(
-            tempdir, "hdratio--deg", "Degradation > {}", "min-deg", opts.hdratio_thresh
-        )
-        plot_path_cdfs(
-            tempdir,
-            "hdratio--opp",
-            "Improvement > {}",
-            "min-improv",
-            opts.hdratio_thresh,
-        )
+        sum2metric2thresh2name2tuple = defaultdict(dict)
+        sum2metric2thresh2cont2valid = defaultdict(dict)
+        sum2metric2thresh2valid = defaultdict(dict)
+        w(f"{tempdir.name}\n")
+        for m in ["minrtt50", "hdratio"]:
+            for s in ["deg", "opp"]:
+                thresh_string = summarizer2threshstr[s]
+                thresh = metric2thresh[m]
+                sum2metric2thresh2name2tuple[s][m] = load_thresh2name2tuple(
+                    tempdir, m, s, thresh_string, thresh
+                )
+                sum2metric2thresh2cont2valid[s][m] = make_thresh2cont2valid(
+                    sum2metric2thresh2name2tuple[s][m]
+                )
+                sum2metric2thresh2valid[s][m] = make_thresh2valid(
+                    sum2metric2thresh2name2tuple[s][m]
+                )
+
+        build_header(sum2metric2thresh2name2tuple, w)
+        for temp in TEMPORAL_BEHAVIORS:
+            templine = build_temp_line(
+                sum2metric2thresh2name2tuple, sum2metric2thresh2valid, temp
+            )
+            if temp not in TEMPORAL_VALID:
+                w(f"% {temp: <12} & {templine} \\\\\n")
+            else:
+                w(f"\\hline\n")
+                w(f"\\rowcolor{{bggray}}\n")
+                w(f"{temp: <12} & {templine} \\\\\n")
+                for cont in CLIENT_CONTINENTS:
+                    line = build_cont_line(
+                        sum2metric2thresh2name2tuple,
+                        sum2metric2thresh2cont2valid,
+                        temp,
+                        cont,
+                    )
+                    name = f"\\qquad {cont}"
+                    w(f"{name: <12} & {line} \\\\\n")
 
 
-def plot_ci_cdfs(path, xlabel, xlim, labels):
-    # Plot difference (bins)
-    cdf = readcdf(path / pathlib.Path("diff_ci_bins.cdf"))
-    lbcdf = readcdf(path / pathlib.Path("diff_ci_lb_bins.cdf"))
-    ubcdf = readcdf(path / pathlib.Path("diff_ci_ub_bins.cdf"))
-    ylabel = "Cum. Frac. of Time Bins"
-    outfile = path / "diff_ci.pdf"
-    plot_ci(cdf, lbcdf, ubcdf, xlabel, ylabel, xlim, labels, outfile)
-
-    # Plot difference (traffic)
-    cdf = readcdf(path / pathlib.Path("diff_ci_bins_weighted.cdf"))
-    lbcdf = readcdf(path / pathlib.Path("diff_ci_lb_bins_weighted.cdf"))
-    ubcdf = readcdf(path / pathlib.Path("diff_ci_ub_bins_weighted.cdf"))
-    ylabel = "Cum. Frac. of Time Bins"
-    outfile = path / "diff_ci_weighted.pdf"
-    plot_ci(cdf, lbcdf, ubcdf, xlabel, ylabel, xlim, labels, outfile)
+METRIC_FMT_THRESH = {"minrtt50": lambda x: f"{int(x)}ms", "hdratio": lambda x: x}
 
 
-def plot_ci(
-    diff_cdf: List[Tuple[float, float]],
-    lower_bound_cdf: List[Tuple[float, float]],
-    upper_bound_cdf: List[Tuple[float, float]],
-    xlabel: str,
-    ylabel: str,
-    xlim: Tuple[float, float],
-    labels: List[Tuple[Tuple[float, float], str, str]],
-    outfile: pathlib.Path,
+def build_header(sum2metric2thresh2name2tuple, w):
+    summarizers = list()
+    metrics = list()
+    thresholds = list()
+    colstr = ""
+    cols = 0
+    for sumr, metric2thresh2name2tuple in sum2metric2thresh2name2tuple.items():
+        scols = 0
+        colstr += "|"
+        for metric, thresh2name2tuple in metric2thresh2name2tuple.items():
+            mcols = 2 * len(thresh2name2tuple)
+            scols += mcols
+            string = "\\multicolumn{%d}{c|}{%s}" % (mcols, METRIC_NAME[metric])
+            metrics.append(string)
+            for thresh, _name2tuple in sorted(thresh2name2tuple.items()):
+                string = "\\multicolumn{2}{c|}{%s}" % METRIC_FMT_THRESH[metric](thresh)
+                thresholds.append(string)
+                colstr += "|rr"
+        string = "\\multicolumn{%d}{c||}{%s}" % (scols, SUMMARIZER_NAME[sumr])
+        summarizers.append(string)
+        cols += scols
+    w("\\begin{tabular}{r%s}\n" % colstr)
+    w("& %s \\\\\n" % " & ".join(summarizers))
+    w("\\multicolumn{1}{l||}{\\textsc{Class$/$}} & %s \\\\\n" % " & ".join(metrics))
+    w("\\textsc{Continent} & %s \\\\\n" % " & ".join(thresholds))
+    return cols
+
+
+def build_temp_line(sum2metric2thresh2name2tuple, sum2metric2thresh2valid, temp):
+    numbers = list()
+    for s, metric2thresh2name2tuple in sum2metric2thresh2name2tuple.items():
+        for m, thresh2name2tuple in metric2thresh2name2tuple.items():
+            for t, name2tuple in sorted(thresh2name2tuple.items()):
+                valid = name2tuple[temp][1]
+                shifted = name2tuple[temp][0]
+                total_valid = sum2metric2thresh2valid[s][m][t]
+                frac_valid = valid / total_valid
+                frac_shifted = shifted / total_valid
+                numbers.append(f"{frac_valid:.3f}".lstrip("0"))
+                if temp not in TEMPORAL_HAS_SHIFTS:
+                    numbers.append("    ")
+                else:
+                    numbers.append(f"{frac_shifted:.3f}".lstrip("0"))
+    return " & ".join(numbers)
+
+
+def build_cont_line(
+    sum2metric2thresh2name2tuple, sum2metric2thresh2cont2valid, temp, cont
 ):
-    logging.info("plotting %s", str(outfile))
-    fig, ax1 = plt.subplots()
-    ax1.set_xlabel(xlabel, fontsize=16)
-    ax1.set_ylabel(ylabel, fontsize=16)
-    ax1.tick_params(axis="both", which="major", labelsize=14)
-    ax1.set_xlim(xlim[0], xlim[1])
-    ax1.set_ylim(0, 1)
-    for pos, alignment, text in labels:
-        ax1.annotate(
-            text,
-            xy=pos,
-            fontsize=14,
-            horizontalalignment=alignment,
-            backgroundcolor="white",
-        )
-    fig.tight_layout()
-    xs, ys = zip(*diff_cdf)
-    ax1.plot(xs, ys)
-
-    xslo, yslo = zip(*lower_bound_cdf)
-    xsup, ysup = zip(*upper_bound_cdf)
-    xslonorm = list()
-    xsupnorm = list()
-    for y in ys:
-        i = bisect.bisect(yslo, y)
-        i = min(i, len(xslo) - 1)
-        xslonorm.append(xslo[i])
-        i = bisect.bisect(ysup, y)
-        i = min(i, len(xsup) - 1)
-        xsupnorm.append(xsup[i])
-    ax1.fill_betweenx(ys, xslonorm, xsupnorm, color="#333333", alpha=0.4, linewidth=0)
-
-    plt.legend(loc="best", fontsize=14)
-    plt.grid()
-    plt.savefig(outfile, bbox_inches="tight")
-    plt.close(fig)
+    numbers = list()
+    name = f"{temp}+{cont}"
+    for s, metric2thresh2name2tuple in sum2metric2thresh2name2tuple.items():
+        for m, thresh2name2tuple in metric2thresh2name2tuple.items():
+            for t, name2tuple in sorted(thresh2name2tuple.items()):
+                valid = name2tuple[name][1]
+                shifted = name2tuple[name][0]
+                total_valid = sum2metric2thresh2cont2valid[s][m][t][cont]
+                frac_valid = valid / total_valid
+                frac_shifted = shifted / total_valid
+                numbers.append(f"{frac_valid:.3f}".lstrip("0"))
+                if temp not in TEMPORAL_HAS_SHIFTS:
+                    numbers.append("    ")
+                else:
+                    numbers.append(f"{frac_shifted:.3f}".lstrip("0"))
+    return " & ".join(numbers)
 
 
-def plot_path_cdfs(path, config_prefix, legend_format, thresh_string, thresh):
-    re_extract_thresh = re.compile(f"--{thresh_string}-" + r"([.\d]+)")
+def load_thresh2name2tuple(path, metric, summarizer, thresh_string, thresh):
+    config_prefix = f"{metric}--{summarizer}"
     config_suffix = f"--{thresh_string}-{thresh}"
+
+    re_extract_thresh = re.compile(f"--{thresh_string}-" + r"([.\d]+)")
+
+    thresh2name2tuple = dict()
     for subdir in path.glob(f"{config_prefix}*{config_suffix}"):
         if not subdir.is_dir():
             continue
         assert subdir.name.endswith(config_suffix)
         configstr = subdir.name[: -len(config_suffix)]
         logging.info("processing %s", configstr)
-        shifts_per_day_label2cdf = dict()
-        frac_shifted_bins_label2cdf = dict()
+
         for cfgdir in path.glob(f"{configstr}--{thresh_string}-*"):
             logging.info("processing %s", cfgdir)
-            cthresh = re_extract_thresh.search(cfgdir.name).group(1)
-            fpath = cfgdir / "average_shifts_per_day_paths.cdf"
-            label = legend_format.format(cthresh)
-            shifts_per_day_label2cdf[label] = readcdf(fpath)
-            fpath = cfgdir / "frac_shifted_bins_paths.cdf"
-            label = legend_format.format(cthresh)
-            frac_shifted_bins_label2cdf[label] = readcdf(fpath)
-        plot_multiline(
-            shifts_per_day_label2cdf,
-            "Average Shifts per Day",
-            (0, 16),
-            path / f"{configstr}.shifts-per-day.pdf",
-        )
-        plot_multiline(
-            frac_shifted_bins_label2cdf,
-            "Fraction of Time with Improvement",
-            (0.0, 1.0),
-            path / f"{configstr}.frac-shifted-bins.pdf",
-        )
+            cthresh = float(re_extract_thresh.search(cfgdir.name).group(1))
+            if cthresh not in SUMMARIZER_METRIC_THRESH[summarizer][metric]:
+                continue
 
+            with open(cfgdir / "temporal-behavior.pickle", "rb") as fd:
+                name2tuple = pickle.load(fd)
+                assert isinstance(name2tuple, dict)
+                thresh2name2tuple[cthresh] = name2tuple
 
-def plot_multiline(
-    label2cdf: Mapping[str, List[Tuple[float, float]]],
-    xlabel: str,
-    xlim: Tuple[float, float],
-    outfile: pathlib.Path,
-):
-    fig, ax1 = plt.subplots()
-    ax1.set_xlabel(xlabel, fontsize=16)
-    ax1.set_ylabel("Cum. Frac. of Paths", fontsize=16)
-    ax1.tick_params(axis="both", which="major", labelsize=14)
-    ax1.set_xlim(xlim[0], xlim[1])
-    ax1.set_ylim(0, 1)
-    fig.tight_layout()
-    for label, cdf in label2cdf.items():
-        xs, ys = zip(*cdf)
-        ax1.plot(xs, ys, label=label)
-    plt.legend(loc="best", fontsize=14)
-    plt.grid()
-    plt.savefig(outfile, bbox_inches="tight")
-    plt.close(fig)
+    return thresh2name2tuple
 
 
 if __name__ == "__main__":

@@ -84,6 +84,8 @@ pub struct RouteInfo {
     pub hdratio_num_samples: u32,
     pub hdratio: f32,
     pub hdratio_var: f32,
+    pub hdratio_p50: f32,
+    pub hdratio_p50_ci_halfwidth: f32,
     pub px_nexthops: u64,
 }
 
@@ -239,6 +241,9 @@ impl RouteInfo {
         let minrtt_ms_p50_ci_lb: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_lb", i)].parse()?;
         let minrtt_ms_p50_ci_ub: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_ub", i)].parse()?;
         let minrtt_ms_p50_ci_halfwidth = ((minrtt_ms_p50_ci_ub - minrtt_ms_p50_ci_lb) / 2) as u16;
+        let hdratio_p50_ci_lb: u32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse()?;
+        let hdratio_p50_ci_ub: u32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse()?;
+        let hdratio_p50_ci_halfwidth = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2;
         Ok(Box::new(RouteInfo {
             apm_route_num: rec[&format!("r{}_apm_route_num", i)].parse()?,
             bgp_as_path_len: rec[&format!("r{}_bgp_as_path_len", i)].parse()?,
@@ -258,6 +263,8 @@ impl RouteInfo {
             hdratio_num_samples: rec[&format!("r{}_hdratio_num_samples", i)].parse()?,
             hdratio: rec[&format!("r{}_hdratio", i)].parse()?,
             hdratio_var: rec[&format!("r{}_hdratio_var", i)].parse()?,
+            hdratio_p50: rec[&format!("r{}_hdratio_p50", i)].parse()?,
+            hdratio_p50_ci_halfwidth,
             px_nexthops: string_to_hash_u64(&rec[&format!("r{}_px_nexthops", i)]),
         }))
     }
@@ -265,12 +272,23 @@ impl RouteInfo {
     pub fn minrtt_median_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let med1 = rt1.minrtt_ms_p50;
         let med2 = rt2.minrtt_ms_p50;
-        let var1 = rt1.minrtt_ms_p50_var;
-        let var2 = rt2.minrtt_ms_p50_var;
+        let var1 = (f32::from(rt1.minrtt_ms_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
+        let var2 = (f32::from(rt2.minrtt_ms_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
         let md: f32 = f32::from(med1) - f32::from(med2);
         let interval: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
         (md, interval)
     }
+
+    pub fn hdratio_median_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
+        let med1 = rt1.hdratio_p50;
+        let med2 = rt2.hdratio_p50;
+        let var1 = (f32::from(rt1.hdratio_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
+        let var1 = (f32::from(rt1.hdratio_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
+        let md: f32 = f32::from(med1) - f32::from(med2);
+        let interval: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
+        (md, interval)
+    }
+
 
     pub fn hdratio_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let diff: f32 = rt1.hdratio - rt2.hdratio;

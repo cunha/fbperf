@@ -15,6 +15,13 @@ pub struct HdRatioImprovementSummarizer {
     pub compare_lower_bound: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct HdRatio50ImprovementSummarizer {
+    pub hdratio50_min_improv: f32,
+    pub max_hdratio50_diff_ci_halfwidth: f32,
+    pub compare_lower_bound: bool,
+}
+
 impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
     fn summarize(&self, _pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (bin.get_primary_route(), bin.get_best_alternate(RouteInfo::compare_median_minrtt)) {
@@ -101,6 +108,51 @@ impl TimeBinSummarizer for HdRatioImprovementSummarizer {
         format!(
             "hdratio--opp--bound-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
             self.compare_lower_bound, self.max_hdratio_diff_ci_halfwidth, self.hdratio_min_improv,
+        )
+    }
+}
+
+impl TimeBinSummarizer for HdRatio50ImprovementSummarizer {
+    fn summarize(&self, _pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
+        match (bin.get_primary_route(), bin.get_best_alternate(RouteInfo::compare_median_minrtt)) {
+            (None, _) => TimeBinSummary::NoRoute,
+            (_, None) => TimeBinSummary::NoRoute,
+            (Some(ref primary), Some(ref bestalt)) => {
+                let (diff, halfwidth) = RouteInfo::hdratio_median_diff_ci(primary, bestalt);
+                if halfwidth > self.max_hdratio50_diff_ci_halfwidth {
+                    TimeBinSummary::WideConfidenceInterval
+                } else {
+                    let limit: f32 = if self.compare_lower_bound {
+                        diff - halfwidth
+                    } else {
+                        diff
+                    };
+                    TimeBinSummary::Valid(TimeBinStats {
+                        diff_ci: diff,
+                        diff_ci_halfwidth: halfwidth,
+                        is_shifted: limit >= f32::from(self.hdratio50_min_improv),
+                        bytes: bin.bytes_acked_sum,
+                    })
+                }
+            }
+        }
+    }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        let bin = &db.pathid2time2bin[pathid][&time];
+        (
+            bin.get_primary_route().as_ref().unwrap(),
+            bin.get_best_alternate(RouteInfo::compare_median_hdratio).as_ref().unwrap(),
+        )
+    }
+    fn prefix(&self) -> String {
+        format!(
+            "hdratio50--opp--bound-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
+            self.compare_lower_bound, self.max_hdratio50_diff_ci_halfwidth, self.hdratio50_min_improv,
         )
     }
 }

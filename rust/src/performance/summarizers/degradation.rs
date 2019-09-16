@@ -95,10 +95,10 @@ impl MinRtt50LowerBoundDegradationSummarizer {
                     }
                 }
             }
-            valid.sort_by(RouteInfo::compare_median_minrtt);
             if valid.is_empty() {
                 continue;
             }
+            valid.sort_by(RouteInfo::compare_median_minrtt);
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
             sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
         }
@@ -109,7 +109,7 @@ impl MinRtt50LowerBoundDegradationSummarizer {
 impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
     fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2baseroute.get(pathid), bin.get_primary_route()) {
-            (None, _) => TimeBinSummary::NoRoute,
+            (None, _) => TimeBinSummary::WideConfidenceInterval,
             (_, None) => TimeBinSummary::NoRoute,
             (Some(bestroute), Some(primary)) => {
                 let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(primary, bestroute);
@@ -172,10 +172,10 @@ impl HdRatioLowerBoundDegradationSummarizer {
                     }
                 }
             }
-            valid.sort_by(RouteInfo::compare_hdratio);
             if valid.is_empty() {
                 continue;
             }
+            valid.sort_by(RouteInfo::compare_hdratio);
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
             sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
         }
@@ -186,7 +186,7 @@ impl HdRatioLowerBoundDegradationSummarizer {
 impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
     fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2baseroute.get(pathid), bin.get_primary_route()) {
-            (None, _) => TimeBinSummary::NoRoute,
+            (None, _) => TimeBinSummary::WideConfidenceInterval,
             (_, None) => TimeBinSummary::NoRoute,
             (Some(bestroute), Some(primary)) => {
                 let (diff, halfwidth) = RouteInfo::hdratio_diff_ci(bestroute, primary);
