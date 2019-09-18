@@ -6,7 +6,7 @@ the *best alternate* (less preferred) route.  We do *not* compare
 alternate* except that you can never get any improvement.
 
 When there are no alternate routes, we either: ignore the row (`-w-alt`
-files) or use the primary itself as an alterante (`-all` files).  In the
+files) or use the primary itself as an alternate (`-all` files).  In the
 case where the primary path was missing (because it did not have enough
 samples), we just ignore the row; this case should be unusual as the
 primary path has higher sampling rates than other routes.
