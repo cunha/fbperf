@@ -28,10 +28,10 @@ struct Opt {
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
-    let max_minrtt50_diff_ci_halfwidth: f32 = 20.0;
-    let max_minrtt50_var: f32 = 25.0;
-    let max_hdratio_diff_ci_halfwidth: f32 = 0.1;
-    let max_hdratio_var: f32 = 0.5;
+    let max_minrtt50_diff_ci_halfwidth: f32 = 25.0;
+    let max_minrtt50_ci_halfwidth: u16 = 25;
+    let max_hdratio_diff_ci_halfwidth: f32 = 0.25;
+    let max_hdratio_ci_halfwidth: f32 = 0.25;
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
     for &min_minrtt50_diff in [0, 5, 10, 20, 50].iter() {
         let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
@@ -44,7 +44,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
             0.1,
             min_minrtt50_diff,
             max_minrtt50_diff_ci_halfwidth,
-            max_minrtt50_var,
+            max_minrtt50_ci_halfwidth,
             db,
         ));
         summarizers.push(ml);
@@ -60,7 +60,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
             0.9,
             min_hdratio_diff,
             max_hdratio_diff_ci_halfwidth,
-            max_hdratio_var,
+            max_hdratio_ci_halfwidth,
             db,
         ));
         summarizers.push(hl);
@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let db = db::DB::from_file(&opts.input, opts.bin_duration_secs)?;
     info!("loaded DB with {} rows", db.rows);
-    info!("db has {} paths, {} total traffic", db.pathid2traffic.len(), db.total_traffic);
+    info!("db has {} paths, {} total traffic", db.pathid2info.len(), db.total_traffic);
 
     let tempconfigs: Vec<perfstats::TemporalConfig> = build_temporal_configs();
     let summarizers: Vec<Box<dyn perfstats::TimeBinSummarizer>> = build_summarizers(&db);
@@ -141,6 +141,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             dbsum.dump(&dir, &db, summarizer.borrow())?;
             tempcfg.dump(&dir)?;
+            summarizers::opportunity::dump_opportunity_vs_relationship(&dbsum, &dir)?;
         }
     }
     Ok(())

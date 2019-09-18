@@ -14,7 +14,9 @@ pub(super) enum ParseErrorKind {
     Untracked,
     AddrParseError,
     VipMetroIsNull,
+    ClientCountryIsNull,
     UnknownPeeringRelationship,
+    HdRatioBootstrapDiffCiBoundsMismatch,
     RepeatedTimebin,
 }
 

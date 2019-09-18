@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use log::info;
+use log::{error, info};
 use num_enum::TryFromPrimitive;
 use serde_pickle;
 
@@ -88,7 +88,7 @@ pub struct TemporalConfig {
     pub min_frac_bins_with_alternate: f32,     // no alternate class
     pub min_frac_valid_bins: f32,              // undersampled class
     pub continuous_min_frac_shifted_bins: f32, // persistent class
-    pub diurnal_min_bad_bins: u32,             // diurnal class
+    pub diurnal_min_bad_bins: u16,             // diurnal class
     pub diurnal_bad_bin_min_prob_shift: f32,   // diurnal class
     pub uneventful_max_frac_shifted_bins: f32, // uneventful class
 }
@@ -96,31 +96,31 @@ pub struct TemporalConfig {
 #[derive(Default)]
 pub struct DBSummary {
     pub pathid2summary: HashMap<Rc<db::PathId>, PathSummary>,
-    pub total_shifted_bytes: u64,
-    pub total_valid_bytes: u64,
-    shifted_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
-    valid_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
-    total_bytes: [[u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
+    pub total_shifted_bytes: u128,
+    pub total_valid_bytes: u128,
+    shifted_bytes: [[u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
+    valid_bytes: [[u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
+    total_bytes: [[u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
 }
 
 #[derive(Debug, Default)]
 pub struct PathSummary {
-    time2binstats: BTreeMap<u64, TimeBinStats>,
-    day2shifts: HashMap<u32, u32>,
-    distinct_shifts: u32,
-    bad_bins: u32,
-    bad_bytes: u64,
-    // existing_bins needs to come from db::DB's pathid2time2bin[pathid].len()
-    noroute_bins: u32,
-    shifted_bins: u32,
-    // valid_bins = time2binstats.len()
-    wideci_bins: u32,
+    pub time2binstats: BTreeMap<u64, TimeBinStats>,
+    pub day2shifts: HashMap<u32, u32>,
+    pub distinct_shifts: u16,
+    pub bad_bytes: u128,
     // existing_bytes needs to come from db::DB's pathid2traffic[pathid]
-    noroute_bytes: u64,
-    shifted_bytes: u64,
-    valid_bytes: u64,
-    wideci_bytes: u64,
-    temporal_behavior: TemporalBehavior,
+    pub noroute_bytes: u128,
+    pub shifted_bytes: u128,
+    pub valid_bytes: u128,
+    pub wideci_bytes: u128,
+    pub bad_bins: u16,
+    // existing_bins needs to come from db::DB's pathid2time2bin[pathid].len()
+    pub noroute_bins: u16,
+    pub shifted_bins: u16,
+    // valid_bins = time2binstats.len()
+    pub wideci_bins: u16,
+    pub temporal_behavior: TemporalBehavior,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -128,7 +128,16 @@ pub struct TimeBinStats {
     pub bytes: u64,
     pub diff_ci: f32,
     pub diff_ci_halfwidth: f32,
+    pub primary_peer_type: db::PeerType,
+    pub alternate_peer_type: db::PeerType,
+    pub bitmask: u8,
     pub is_shifted: bool,
+}
+
+impl TimeBinStats {
+    pub const ALTERNATE_IS_LONGER: u8 = 1;
+    pub const ALTERNATE_IS_PREPENDED_MORE: u8 = (1 << 1);
+    pub const BEST_ALTERNATE_IS_BGP_PREFERRED: u8 = (1 << 2);
 }
 
 #[derive(Debug, PartialEq)]
@@ -174,8 +183,9 @@ impl DBSummary {
         tempconfig: &TemporalConfig,
     ) -> DBSummary {
         let mut dbsum = DBSummary::default();
-        for (pid, time2bin) in &db.pathid2time2bin {
-            let psum = PathSummary::build(&pid, time2bin, db.total_bins, summarizer, tempconfig);
+        for (pid, pinfo) in &db.pathid2info {
+            let psum =
+                PathSummary::build(&pid, &pinfo.time2bin, db.total_bins, summarizer, tempconfig);
             // if psum.valid_bytes == 0 {
             //     continue;
             // }
@@ -185,7 +195,7 @@ impl DBSummary {
             dbsum.valid_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
                 psum.valid_bytes;
             dbsum.total_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
-                db.pathid2traffic[pid];
+                db.pathid2info[pid].total_traffic;
             dbsum.pathid2summary.insert(Rc::clone(&pid), psum);
         }
         dbsum
@@ -193,19 +203,20 @@ impl DBSummary {
 
     pub fn reclassify(&mut self, db: &db::DB, tempconfig: &TemporalConfig) {
         self.shifted_bytes =
-            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
+            [[0u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
         self.valid_bytes =
-            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
+            [[0u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
         self.total_bytes =
-            [[0u64; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
+            [[0u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize];
         for (pid, psum) in self.pathid2summary.iter_mut() {
-            psum.classify(db.total_bins, db.pathid2time2bin[pid].len() as u32, tempconfig);
+            let pinfo = &db.pathid2info[pid];
+            psum.classify(db.total_bins, pinfo.time2bin.len() as u32, tempconfig);
             self.shifted_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
                 psum.shifted_bytes;
             self.valid_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
                 psum.valid_bytes;
             self.total_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
-                db.pathid2traffic[pid];
+                pinfo.total_traffic;
         }
     }
 
@@ -228,213 +239,259 @@ impl DBSummary {
     ) -> Result<(), io::Error> {
         std::fs::create_dir_all(path)?;
 
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_minrtt50_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_minrtt50_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_minrtt50_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff - interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_minrtt50_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff - interval, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_minrtt50_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff + interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_minrtt50_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff + interval, bs.bytes as f32))
-        })?;
+        let data_specs: [(&str, &dyn Fn(f32, f32) -> f32); 3] = [
+            ("ci_diff", &|diff: f32, _interval: f32| diff),
+            ("ci_lb", &|diff: f32, interval: f32| diff - interval),
+            ("ci_ub", &|diff: f32, interval: f32| diff + interval),
+        ];
+        let metric_specs: [(&str, &dyn Fn(&db::RouteInfo, &db::RouteInfo) -> (f32, f32)); 2] = [
+            ("minrtt50", &|primary: &db::RouteInfo, alternate: &db::RouteInfo| {
+                db::RouteInfo::minrtt_median_diff_ci(alternate, primary)
+            }),
+            ("hdratio50", &|primary: &db::RouteInfo, alternate: &db::RouteInfo| {
+                db::RouteInfo::hdratio_median_diff_ci(primary, alternate)
+            }),
+        ];
 
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_hdratio_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_hdratio_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_hdratio_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff - interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_hdratio_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff - interval, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_hdratio_all_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff + interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_hdratio_all_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff + interval, bs.bytes as f32))
-        })?;
+        for (data, compute_data) in data_specs.iter() {
+            for (metric, compute_diff_ci) in metric_specs.iter() {
+                for &weighted in [true, false].iter() {
+                    for &only_shifted_bins in [true, false].iter() {
+                        let mut fpath = path.clone();
+                        fpath.push(format!(
+                            "{}_{}_weighted_{}_shifted_{}.cdf",
+                            data, metric, weighted, only_shifted_bins
+                        ));
+                        self.dump_bin_cdf(
+                            &fpath,
+                            |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+                                compute_cdf_data(
+                                    pathid,
+                                    time,
+                                    bs,
+                                    db,
+                                    sum,
+                                    CdfDataConfig {
+                                        only_shifted_bins,
+                                        weighted,
+                                        compute_diff_ci,
+                                        compute_data,
+                                    },
+                                )
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
 
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_minrtt50_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_minrtt50_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_minrtt50_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff - interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_minrtt50_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff - interval, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_minrtt50_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff + interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_minrtt50_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
-            Some((diff + interval, bs.bytes as f32))
-        })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_minrtt50_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_minrtt50_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_minrtt50_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff - interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_minrtt50_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff - interval, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_minrtt50_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff + interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_minrtt50_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff + interval, bs.bytes as f32))
+        // })?;
 
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_hdratio_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_diff_hdratio_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_hdratio_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff - interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_lb_hdratio_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff - interval, bs.bytes as f32))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_hdratio_shifted_bins.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff + interval, 1.0))
-        })?;
-        let mut fpath = path.clone();
-        fpath.push("ci_ub_hdratio_shifted_weighted.cdf");
-        self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
-            if !bs.is_shifted {
-                return None;
-            }
-            let (primary, alternate) = sum.get_routes(pathid, time, db);
-            let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
-            Some((diff + interval, bs.bytes as f32))
-        })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_hdratio_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_hdratio_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_hdratio_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff - interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_hdratio_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff - interval, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_hdratio_all_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, _bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff + interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_hdratio_all_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff + interval, bs.bytes as f32))
+        // })?;
+
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_minrtt50_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_minrtt50_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_minrtt50_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff - interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_minrtt50_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff - interval, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_minrtt50_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff + interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_minrtt50_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::minrtt_median_diff_ci(alternate, primary);
+        //     Some((diff + interval, bs.bytes as f32))
+        // })?;
+
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_hdratio_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_diff_hdratio_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, _interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_hdratio_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff - interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_lb_hdratio_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff - interval, bs.bytes as f32))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_hdratio_shifted_bins.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff + interval, 1.0))
+        // })?;
+        // let mut fpath = path.clone();
+        // fpath.push("ci_ub_hdratio_shifted_weighted.cdf");
+        // self.dump_bin_cdf(&fpath, |pathid: &db::PathId, time: u64, bs: &TimeBinStats| {
+        //     if !bs.is_shifted {
+        //         return None;
+        //     }
+        //     let (primary, alternate) = sum.get_routes(pathid, time, db);
+        //     let (diff, interval) = db::RouteInfo::hdratio_diff_ci(primary, alternate);
+        //     Some((diff + interval, bs.bytes as f32))
+        // })?;
 
         let mut fpath = path.clone();
         fpath.push("frac_shifted_bins_paths.cdf");
@@ -442,7 +499,7 @@ impl DBSummary {
             if ps.time2binstats.is_empty() {
                 None
             } else {
-                Some(((ps.shifted_bins as f32) / (ps.time2binstats.len() as f32), 1.0))
+                Some((f32::from(ps.shifted_bins) / (ps.time2binstats.len() as f32), 1.0))
             }
         })?;
         let mut fpath = path.clone();
@@ -452,7 +509,7 @@ impl DBSummary {
                 None
             } else {
                 Some((
-                    (ps.shifted_bins as f32) / (ps.time2binstats.len() as f32),
+                    f32::from(ps.shifted_bins) / (ps.time2binstats.len() as f32),
                     ps.valid_bytes as f32,
                 ))
             }
@@ -466,7 +523,7 @@ impl DBSummary {
             if ps.day2shifts.is_empty() {
                 None
             } else {
-                Some(((ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32), 1.0))
+                Some((f32::from(ps.distinct_shifts) / (ps.day2shifts.len() as f32), 1.0))
             }
         })?;
         let mut fpath = path.clone();
@@ -476,7 +533,7 @@ impl DBSummary {
                 None
             } else {
                 Some((
-                    (ps.distinct_shifts as f32) / (ps.day2shifts.len() as f32),
+                    f32::from(ps.distinct_shifts) / (ps.day2shifts.len() as f32),
                     ps.valid_bytes as f32,
                 ))
             }
@@ -516,7 +573,8 @@ impl DBSummary {
     }
 
     fn dump_temporal_tables(&self, path: &PathBuf) -> Result<(), io::Error> {
-        let mut key2data: BTreeMap<String, (u64, u64, u64, f64, f64, f64)> = BTreeMap::new();
+        let mut key2data: BTreeMap<String, (String, String, String, f64, f64, f64)> =
+            BTreeMap::new();
 
         let mut filepath = path.clone();
         filepath.push("temporal-behavior-table.txt");
@@ -528,26 +586,26 @@ impl DBSummary {
             .open(filepath)?;
         let mut bw = io::BufWriter::new(file);
 
-        let mut continent_shifted: Vec<u64> =
+        let mut continent_shifted: Vec<u128> =
             Vec::with_capacity(db::ClientContinent::SIZE as usize);
-        let mut continent_valid: Vec<u64> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
-        let mut continent_total: Vec<u64> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
+        let mut continent_valid: Vec<u128> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
+        let mut continent_total: Vec<u128> = Vec::with_capacity(db::ClientContinent::SIZE as usize);
         for i in 0..(db::ClientContinent::SIZE as usize) {
-            continent_shifted.push(self.shifted_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
-            continent_valid.push(self.valid_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
-            continent_total.push(self.total_bytes.iter().fold(0u64, |acc, a| acc + a[i]));
+            continent_shifted.push(self.shifted_bytes.iter().fold(0u128, |acc, a| acc + a[i]));
+            continent_valid.push(self.valid_bytes.iter().fold(0u128, |acc, a| acc + a[i]));
+            continent_total.push(self.total_bytes.iter().fold(0u128, |acc, a| acc + a[i]));
         }
 
-        let global_total: u64 = continent_total.iter().sum::<u64>();
+        let global_total: u128 = continent_total.iter().sum::<u128>();
         assert!(continent_total.len() == db::ClientContinent::SIZE as usize);
 
         for i in 0..(db::ClientContinent::SIZE as usize) {
             let cont: db::ClientContinent = db::ClientContinent::try_from(i as u8).unwrap();
             let name: String = format!("{:?}", cont);
             let data = (
-                continent_shifted[i],
-                continent_valid[i],
-                continent_total[i],
+                continent_shifted[i].to_string(),
+                continent_valid[i].to_string(),
+                continent_total[i].to_string(),
                 continent_shifted[i] as f64 / global_total as f64,
                 continent_valid[i] as f64 / global_total as f64,
                 continent_total[i] as f64 / global_total as f64,
@@ -565,12 +623,12 @@ impl DBSummary {
             let behavior: TemporalBehavior = TemporalBehavior::try_from(i as u8).unwrap();
             let name: String = format!("{:?}", behavior);
             let data = (
-                self.shifted_bytes[i].iter().sum::<u64>(),
-                self.valid_bytes[i].iter().sum::<u64>(),
-                self.total_bytes[i].iter().sum::<u64>(),
-                self.shifted_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
-                self.valid_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
-                self.total_bytes[i].iter().sum::<u64>() as f64 / global_total as f64,
+                self.shifted_bytes[i].iter().sum::<u128>().to_string(),
+                self.valid_bytes[i].iter().sum::<u128>().to_string(),
+                self.total_bytes[i].iter().sum::<u128>().to_string(),
+                self.shifted_bytes[i].iter().sum::<u128>() as f64 / global_total as f64,
+                self.valid_bytes[i].iter().sum::<u128>() as f64 / global_total as f64,
+                self.total_bytes[i].iter().sum::<u128>() as f64 / global_total as f64,
             );
             writeln!(
                 bw,
@@ -587,9 +645,9 @@ impl DBSummary {
                 let cont: db::ClientContinent = db::ClientContinent::try_from(j as u8).unwrap();
                 let name: String = format!("{:?}+{:?}", behavior, cont);
                 let data = (
-                    self.shifted_bytes[i][j],
-                    self.valid_bytes[i][j],
-                    self.total_bytes[i][j],
+                    self.shifted_bytes[i][j].to_string(),
+                    self.valid_bytes[i][j].to_string(),
+                    self.total_bytes[i][j].to_string(),
                     self.shifted_bytes[i][j] as f64 / curr_cont_total as f64,
                     self.valid_bytes[i][j] as f64 / curr_cont_total as f64,
                     self.total_bytes[i][j] as f64 / curr_cont_total as f64,
@@ -613,10 +671,50 @@ impl DBSummary {
             .create(true)
             .open(filepath)?;
         let mut bw = io::BufWriter::new(file);
-        serde_pickle::to_writer(&mut bw, &key2data, true)
-            .unwrap_or_else(|_| info!("could not dump table as pickle"));
+        serde_pickle::to_writer(&mut bw, &key2data, true).unwrap_or_else(|e| {
+            error!("{}", e);
+            info!("could not dump temporal-behavior table as pickle");
+        });
 
         Ok(())
+    }
+}
+
+struct CdfDataConfig<'a, F, G>
+where
+    F: Fn(&db::RouteInfo, &db::RouteInfo) -> (f32, f32),
+    G: Fn(f32, f32) -> f32,
+{
+    only_shifted_bins: bool,
+    weighted: bool,
+    compute_diff_ci: &'a F,
+    compute_data: &'a G,
+}
+
+fn compute_cdf_data<F, G>(
+    pathid: &db::PathId,
+    time: u64,
+    bs: &TimeBinStats,
+    db: &db::DB,
+    sum: &dyn TimeBinSummarizer,
+    config: CdfDataConfig<F, G>,
+) -> Option<(f32, f32)>
+where
+    F: Fn(&db::RouteInfo, &db::RouteInfo) -> (f32, f32),
+    G: Fn(f32, f32) -> f32,
+{
+    if config.only_shifted_bins && !bs.is_shifted {
+        None
+    } else {
+        let (primary, alternate) = sum.get_routes(pathid, time, db);
+        let (diff, interval) = (config.compute_diff_ci)(primary, alternate);
+        let data: f32 = (config.compute_data)(diff, interval);
+        let weight: f32 = if config.weighted {
+            bs.bytes as f32
+        } else {
+            1.0
+        };
+        Some((data, weight))
     }
 }
 
@@ -634,21 +732,22 @@ impl PathSummary {
             // This requires that time2bin is a BTreeMap as
             // computing the number of distinct shift events
             // requires processing TimeBins in time order.
+            let bytes: u128 = u128::from(timebin.bytes_acked_sum);
             match summarizer.summarize(pathid, timebin) {
                 TimeBinSummary::NoRoute => {
                     psum.noroute_bins += 1;
-                    psum.noroute_bytes += timebin.bytes_acked_sum;
+                    psum.noroute_bytes += bytes;
                 }
                 TimeBinSummary::WideConfidenceInterval => {
                     psum.wideci_bins += 1;
-                    psum.wideci_bytes += timebin.bytes_acked_sum;
+                    psum.wideci_bytes += bytes;
                 }
                 TimeBinSummary::Valid(binstats) => {
-                    psum.valid_bytes += timebin.bytes_acked_sum;
+                    psum.valid_bytes += bytes;
                     let e = psum.day2shifts.entry((time / 86400) as u32);
                     if binstats.is_shifted {
                         psum.shifted_bins += 1;
-                        psum.shifted_bytes += timebin.bytes_acked_sum;
+                        psum.shifted_bytes += bytes;
                         if !is_shifted {
                             psum.distinct_shifts += 1;
                         }
@@ -672,7 +771,7 @@ impl PathSummary {
             self.temporal_behavior = TemporalBehavior::MissingBins;
             return;
         }
-        let frac_with_alt = 1.0 - (self.noroute_bins as f32 / existing_bins as f32);
+        let frac_with_alt = 1.0 - f32::from(self.noroute_bins) / (existing_bins as f32);
         if frac_with_alt < config.min_frac_bins_with_alternate {
             self.temporal_behavior = TemporalBehavior::NoRoute;
             return;
@@ -683,7 +782,7 @@ impl PathSummary {
             self.temporal_behavior = TemporalBehavior::Undersampled;
             return;
         }
-        let frac_shift: f32 = self.shifted_bins as f32 / valid_bins;
+        let frac_shift: f32 = f32::from(self.shifted_bins) / valid_bins;
         if frac_shift <= config.uneventful_max_frac_shifted_bins {
             self.temporal_behavior = TemporalBehavior::Uneventful;
         } else if frac_shift >= config.continuous_min_frac_shifted_bins {
@@ -714,13 +813,13 @@ impl PathSummary {
         });
         let (bad_bins, bad_bytes) =
             compute_bad_bins_traffic(&offset_shift_counts, &offset_bytes, min_shifts);
-        self.bad_bins = bad_bins;
+        self.bad_bins = bad_bins as u16;
         self.bad_bytes = bad_bytes;
     }
 }
 
 impl Default for TemporalBehavior {
-    fn default() -> TemporalBehavior {
+    fn default() -> Self {
         TemporalBehavior::Uninitialized
     }
 }
@@ -729,14 +828,14 @@ fn compute_bad_bins_traffic(
     offset_shift_counts: &[u32],
     offset_traffic: &[u64],
     min_shifts: u32,
-) -> (u32, u64) {
+) -> (u32, u128) {
     assert!(offset_shift_counts.len() == offset_traffic.len());
     let mut bad_bins: u32 = 0;
-    let mut bad_traffic: u64 = 0;
+    let mut bad_traffic: u128 = 0;
     for (i, shifts) in offset_shift_counts.iter().enumerate() {
         if *shifts >= min_shifts {
             bad_bins += 1;
-            bad_traffic += offset_traffic[i];
+            bad_traffic += u128::from(offset_traffic[i]);
         }
     }
     (bad_bins, bad_traffic)
@@ -788,7 +887,7 @@ mod tests {
         };
 
         let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 51, 50, 100.0);
+            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100, 51, 50, 100);
         let psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.is_empty());
@@ -802,7 +901,7 @@ mod tests {
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100.0, 55, 50, 100.0);
+            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100, 55, 50, 100);
         let psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &NULL_TEMPCONFIG);
         assert!(psum.time2binstats.is_empty());
@@ -820,8 +919,7 @@ mod tests {
     fn test_path_summary_all_valid_no_shifts() {
         let _pathid: db::PathId = db::tests::make_path_id();
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 1);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 2,
@@ -836,12 +934,13 @@ mod tests {
         assert!(psum.distinct_shifts == 0);
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
+        assert!(
+            psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64))
+        );
         assert!(psum.bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Uneventful);
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 0.001, 100, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 1, 100, 50, 1);
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 51,
             max_minrtt50_diff_ci_halfwidth: 5.0,
@@ -855,7 +954,9 @@ mod tests {
         assert!(psum.distinct_shifts == 0);
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
+        assert!(
+            psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64))
+        );
         assert!(psum.bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Uneventful);
     }
@@ -864,8 +965,7 @@ mod tests {
     fn test_path_summary_all_valid_all_shifts() {
         let _pathid: db::PathId = db::tests::make_path_id();
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 1);
         let nbins = time2bin.len();
         assert!(nbins == BINS_IN_WEEK as usize);
         let summarizer = MinRtt50ImprovementSummarizer {
@@ -879,14 +979,15 @@ mod tests {
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 86400 / BIN_DURATION_SECS as u32));
         assert!(psum.distinct_shifts == 1);
-        assert!(psum.shifted_bins == nbins as u32);
+        assert!(psum.shifted_bins == nbins as u16);
         assert!(psum.shifted_bytes == psum.valid_bytes);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.bad_bins == 86400 / (BIN_DURATION_SECS as u32));
+        assert!(
+            psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64))
+        );
+        assert!(psum.bad_bins == (86400 / BIN_DURATION_SECS) as u16);
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 1);
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
@@ -898,10 +999,12 @@ mod tests {
         assert!(psum.day2shifts.len() == 7);
         assert!(psum.day2shifts.values().fold(true, |_, e| *e == 86400 / BIN_DURATION_SECS as u32));
         assert!(psum.distinct_shifts == 1);
-        assert!(psum.shifted_bins == nbins as u32);
+        assert!(psum.shifted_bins == nbins as u16);
         assert!(psum.shifted_bytes == psum.valid_bytes);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64));
-        assert!(psum.bad_bins == 86400 / (BIN_DURATION_SECS as u32));
+        assert!(
+            psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (time2bin.len() as u64))
+        );
+        assert!(psum.bad_bins == (86400 / BIN_DURATION_SECS) as u16);
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
     }
 
@@ -909,8 +1012,7 @@ mod tests {
     fn test_path_summary_half_valid_no_shifts() {
         let _pathid: db::PathId = db::tests::make_path_id();
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 100);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 2,
@@ -925,12 +1027,12 @@ mod tests {
         assert!(psum.distinct_shifts == 0);
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
+        assert!(psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2));
         assert!(psum.bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
         let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 0.001, 100, 50, 100.0);
+            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 1, 100, 50, 100);
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 51,
             max_minrtt50_diff_ci_halfwidth: 5.0,
@@ -944,7 +1046,7 @@ mod tests {
         assert!(psum.distinct_shifts == 0);
         assert!(psum.shifted_bins == 0);
         assert!(psum.shifted_bytes == 0);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
+        assert!(psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2));
         assert!(psum.bad_bins == 0);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
     }
@@ -953,8 +1055,7 @@ mod tests {
     fn test_path_summary_half_valid_all_shifts() {
         let _pathid: db::PathId = db::tests::make_path_id();
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 100.0);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 100);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 1,
@@ -970,14 +1071,13 @@ mod tests {
             .values()
             .fold(true, |_, e| *e == 86400 / 2 / BIN_DURATION_SECS as u32));
         assert!(psum.distinct_shifts == 1);
-        assert!(psum.shifted_bins == (nbins / 2) as u32);
+        assert!(psum.shifted_bins == (nbins / 2) as u16);
         assert!(psum.shifted_bytes == psum.valid_bytes);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
+        assert!(psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2));
         assert!(psum.bad_bins == 48);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 100.0);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 100);
         let summarizer = MinRtt50ImprovementSummarizer {
             minrtt50_min_improv: 5,
             max_minrtt50_diff_ci_halfwidth: 5.0,
@@ -992,9 +1092,9 @@ mod tests {
             .values()
             .fold(true, |_, e| *e == 86400 / 2 / BIN_DURATION_SECS as u32));
         assert!(psum.distinct_shifts == 1);
-        assert!(psum.shifted_bins == (nbins / 2) as u32);
+        assert!(psum.shifted_bins == (nbins / 2) as u16);
         assert!(psum.shifted_bytes == psum.valid_bytes);
-        assert!(psum.valid_bytes == db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2);
+        assert!(psum.valid_bytes == u128::from(db::TimeBin::MOCK_TOTAL_BYTES * (nbins as u64) / 2));
         assert!(psum.bad_bins == 48);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
     }
@@ -1008,14 +1108,12 @@ mod tests {
             max_minrtt50_diff_ci_halfwidth: 5.0,
             compare_lower_bound: false,
         };
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 1);
         let psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 0.001, 55, 50, 100.0);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 100);
         let mut psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
@@ -1035,8 +1133,7 @@ mod tests {
             max_minrtt50_diff_ci_halfwidth: 5.0,
             compare_lower_bound: false,
         };
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 55, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 55, 50, 1);
         let mut psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Diurnal);
@@ -1062,9 +1159,8 @@ mod tests {
             compare_lower_bound: false,
         };
         let mut time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 51, 50, 0.001);
-        let time2bin2 =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 55, 50, 0.001);
+            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 1);
+        let time2bin2 = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 55, 50, 1);
         time2bin.extend(time2bin2.into_iter().map(|(t, bin)| (t + 7 * 86400, bin)));
         let bins = time2bin.len();
         assert!(bins == 2 * BINS_IN_WEEK as usize);
@@ -1094,8 +1190,7 @@ mod tests {
             compare_lower_bound: false,
         };
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100.0, 55, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 100, 55, 50, 1);
         let mut psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
@@ -1105,8 +1200,7 @@ mod tests {
         psum.classify(BINS_IN_WEEK, time2bin.len() as u32, &config);
         assert!(psum.temporal_behavior == TemporalBehavior::Continuous);
 
-        let time2bin =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 51, 50, 0.001);
+        let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100, 51, 50, 1);
         let mut psum =
             PathSummary::build(&_pathid, &time2bin, BINS_IN_WEEK, &summarizer, &DEFAULT_TEMPCONFIG);
         assert!(psum.temporal_behavior == TemporalBehavior::Undersampled);
@@ -1126,16 +1220,16 @@ mod tests {
         };
 
         let mut database: db::DB = db::DB::default();
-        let time2bin1 =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 0.001, 55, 50, 0.001);
+        let time2bin1 = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 55, 50, 1);
         let nbins: u64 = time2bin1.len() as u64;
         let pid1: db::PathId = db::tests::make_path_id();
         let time2bin2 =
-            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100.0, 55, 50, 0.001);
+            db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 100, 55, 50, 1);
         let pid2 = db::PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
             client_continent: db::ClientContinent::Unknown,
+            client_country: ['B', 'R'],
         };
         assert!(database.insert(pid1.clone(), time2bin1).is_none());
         assert!(database.insert(pid2.clone(), time2bin2).is_none());
@@ -1145,16 +1239,16 @@ mod tests {
         assert!(dbsum.pathid2summary[&pid1].temporal_behavior == TemporalBehavior::Diurnal);
         assert!(dbsum.pathid2summary[&pid2].temporal_behavior == TemporalBehavior::Undersampled);
         assert!(
-            dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u64>()
-                == nbins * db::TimeBin::MOCK_TOTAL_BYTES
+            dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u128>()
+                == u128::from(nbins * db::TimeBin::MOCK_TOTAL_BYTES)
         );
         assert!(
-            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>()
-                == nbins * db::TimeBin::MOCK_TOTAL_BYTES / 2
+            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u128>()
+                == u128::from(nbins * db::TimeBin::MOCK_TOTAL_BYTES / 2)
         );
         assert!(
-            dbsum.total_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>()
-                == nbins * db::TimeBin::MOCK_TOTAL_BYTES
+            dbsum.total_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u128>()
+                == u128::from(nbins * db::TimeBin::MOCK_TOTAL_BYTES)
         );
 
         let mut config = DEFAULT_TEMPCONFIG;
@@ -1165,16 +1259,16 @@ mod tests {
         assert!(dbsum.pathid2summary[&pid1].temporal_behavior == TemporalBehavior::Continuous);
         assert!(dbsum.pathid2summary[&pid2].temporal_behavior == TemporalBehavior::Continuous);
         assert!(
-            dbsum.valid_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u64>()
-                == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 3 / 2
+            dbsum.valid_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u128>()
+                == u128::from(nbins * db::TimeBin::MOCK_TOTAL_BYTES * 3 / 2)
         );
-        assert!(dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u64>() == 0);
+        assert!(dbsum.valid_bytes[TemporalBehavior::Diurnal as usize].iter().sum::<u128>() == 0);
         assert!(
-            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u64>() == 0
+            dbsum.valid_bytes[TemporalBehavior::Undersampled as usize].iter().sum::<u128>() == 0
         );
         assert!(
-            dbsum.total_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u64>()
-                == nbins * db::TimeBin::MOCK_TOTAL_BYTES * 2
+            dbsum.total_bytes[TemporalBehavior::Continuous as usize].iter().sum::<u128>()
+                == u128::from(nbins * db::TimeBin::MOCK_TOTAL_BYTES * 2)
         );
     }
 

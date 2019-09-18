@@ -10,8 +10,9 @@ use std::str::FromStr;
 
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
-use log::{debug, error, info};
+use log::info;
 use num_enum::TryFromPrimitive;
+use serde::Serialize;
 
 mod error;
 use error::{ParseError, ParseErrorKind};
@@ -19,17 +20,13 @@ use error::{ParseError, ParseErrorKind};
 const CONFIDENCE_Z: f32 = 2.0;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum PeerSubtype {
-    Private,
-    Public,
-    Paid,
-}
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, TryFromPrimitive, Serialize)]
 pub enum PeerType {
-    Peering(PeerSubtype),
-    Transit,
+    PeeringPrivate = 0,
+    PeeringPublic = 1,
+    PeeringPaid = 2,
+    Transit = 3,
+    Uninitialized = 4,
 }
 
 #[repr(u8)]
@@ -47,12 +44,11 @@ pub enum ClientContinent {
 
 #[derive(Default)]
 pub struct DB {
-    pub pathid2time2bin: HashMap<Rc<PathId>, BTreeMap<u64, TimeBin>>,
-    pub pathid2traffic: HashMap<Rc<PathId>, u64>,
+    pub pathid2info: HashMap<Rc<PathId>, PathInfo>,
+    pub rows: u32,
     pub total_bins: u32,
-    pub total_traffic: u64,
-    pub rows: u64,
-    error_counts: HashMap<ParseErrorKind, u64>,
+    pub total_traffic: u128,
+    error_counts: HashMap<ParseErrorKind, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -60,49 +56,67 @@ pub struct PathId {
     pub vip_metro: String,
     pub bgp_ip_prefix: IpNet,
     pub client_continent: ClientContinent,
+    pub client_country: [char; 2],
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PathInfo {
+    pub time2bin: BTreeMap<u64, TimeBin>,
+    pub total_traffic: u128,
 }
 
 #[derive(Clone, Debug)]
 pub struct TimeBin {
     pub time_bucket: u64,
     pub bytes_acked_sum: u64,
-    pub num2route: Vec<Option<Box<RouteInfo>>>,
+    pub num2route: [Option<Box<RouteInfo>>; TimeBin::MAX_ROUTES],
+    // pub num2route: Vec<Option<Box<RouteInfo>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct RouteInfo {
     pub apm_route_num: u8,
     pub bgp_as_path_len: u8,
-    pub bgp_as_path_len_wo_prepend: u8,
-    pub bgp_as_path_prepending: bool,
+    pub bgp_as_path_prepends: u8,
+    // pub bgp_as_path_len_wo_prepend: u8,
+    // pub bgp_as_path_prepending: bool,
     pub peer_type: PeerType,
     pub minrtt_num_samples: u32,
-    pub minrtt_ms_p10: u16,
+    // pub minrtt_ms_p10: u16,
     pub minrtt_ms_p50: u16,
     pub minrtt_ms_p50_ci_halfwidth: u16,
-    pub minrtt_ms_p50_var: f32,
+    // pub minrtt_ms_p50_var: f32,
     pub hdratio_num_samples: u32,
     pub hdratio: f32,
     pub hdratio_var: f32,
     pub hdratio_p50: f32,
     pub hdratio_p50_ci_halfwidth: f32,
+    pub hdratio_boot: f32,
+    pub r0_hdratio_boot_diff_ci_lb: f32,
+    pub r0_hdratio_boot_diff_ci_ub: f32,
     pub px_nexthops: u64,
 }
 
 impl PeerType {
     fn new(peer_type: &str, peer_subtype: &str) -> Result<PeerType, ParseError> {
         match (peer_type, peer_subtype) {
-            ("peering", "mixed") => Ok(PeerType::Peering(PeerSubtype::Private)),
-            ("peering", "private") => Ok(PeerType::Peering(PeerSubtype::Private)),
-            ("peering", "public") => Ok(PeerType::Peering(PeerSubtype::Public)),
-            ("route_server", "mixed") => Ok(PeerType::Peering(PeerSubtype::Public)),
-            ("peering", "paid") => Ok(PeerType::Peering(PeerSubtype::Paid)),
+            ("peering", "mixed") => Ok(PeerType::PeeringPrivate),
+            ("peering", "private") => Ok(PeerType::PeeringPrivate),
+            ("peering", "public") => Ok(PeerType::PeeringPublic),
+            ("route_server", "mixed") => Ok(PeerType::PeeringPublic),
+            ("peering", "paid") => Ok(PeerType::PeeringPaid),
             ("transit", "") => Ok(PeerType::Transit),
             (_, _) => Err(ParseError {
                 kind: ParseErrorKind::UnknownPeeringRelationship,
                 message: format!("peer_type: {}, peer_subtype: {}", peer_type, peer_subtype),
             }),
         }
+    }
+}
+
+impl Default for PeerType {
+    fn default() -> Self {
+        PeerType::Uninitialized
     }
 }
 
@@ -113,8 +127,7 @@ impl DB {
         let gzrdr = GzDecoder::new(filerdr);
         let mut csvrdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(gzrdr);
         let mut db = DB {
-            pathid2time2bin: HashMap::new(),
-            pathid2traffic: HashMap::new(),
+            pathid2info: HashMap::new(),
             total_bins: 0,
             total_traffic: 0,
             rows: 0,
@@ -144,17 +157,12 @@ impl DB {
             };
             min_timestamp = std::cmp::min(min_timestamp, timebin.time_bucket);
             max_timestamp = std::cmp::max(max_timestamp, timebin.time_bucket);
-            db.total_traffic += timebin.bytes_acked_sum;
-            db.pathid2traffic
-                .entry(Rc::clone(&pid))
-                .and_modify(|e| *e += timebin.bytes_acked_sum)
-                .or_insert(timebin.bytes_acked_sum);
-            let time2bin = db.pathid2time2bin.entry(Rc::clone(&pid)).or_insert_with(BTreeMap::new);
-            match time2bin.entry(timebin.time_bucket) {
+            let mut pinfo = db.pathid2info.entry(Rc::clone(&pid)).or_insert_with(Default::default);
+            pinfo.total_traffic += u128::from(timebin.bytes_acked_sum);
+            db.total_traffic += u128::from(timebin.bytes_acked_sum);
+            match pinfo.time2bin.entry(timebin.time_bucket) {
                 btree_map::Entry::Vacant(e) => e.insert(timebin),
                 btree_map::Entry::Occupied(_) => {
-                    error!("TimeBin already exists, path {:?}, time {}", pid, &timebin.time_bucket);
-                    debug!("{:?}", &record);
                     *db.error_counts.entry(ParseErrorKind::RepeatedTimebin).or_insert(0) += 1;
                     continue;
                 }
@@ -165,7 +173,7 @@ impl DB {
         info!(
             "DB rows={} paths={} seconds={} bins={} bytes={}",
             db.rows,
-            db.pathid2traffic.len(),
+            db.pathid2info.len(),
             seconds,
             db.total_bins,
             db.total_traffic
@@ -182,11 +190,21 @@ impl PathId {
                 kind: ParseErrorKind::VipMetroIsNull,
                 message: "vip_metro must not be NULL".to_string(),
             })
+        } else if record["client_country"] == "NULL" {
+            Err(ParseError {
+                kind: ParseErrorKind::ClientCountryIsNull,
+                message: "client_country must not be NULL".to_string(),
+            })
         } else {
+            let mut client_country: [char; 2] = ['a', 'a'];
+            let mut chars = record["client_country"].chars();
+            client_country[0] = chars.next().unwrap();
+            client_country[1] = chars.next().unwrap();
             Ok(PathId {
                 vip_metro: record["vip_metro"].to_string(),
                 bgp_ip_prefix: record["bgp_ip_prefix"].parse::<IpNet>()?,
                 client_continent: record["client_continent"].parse::<ClientContinent>().unwrap(),
+                client_country,
             })
         }
     }
@@ -198,11 +216,13 @@ impl TimeBin {
     fn from_record(rec: &HashMap<String, String>) -> Result<TimeBin, ParseError> {
         let mut timebin = TimeBin {
             time_bucket: rec["time_bucket"].parse::<u64>()?,
-            bytes_acked_sum: rec["bytes_acked_sum"].parse::<u64>()?,
-            num2route: Vec::with_capacity(TimeBin::MAX_ROUTES),
+            bytes_acked_sum: rec["bytes_acked"].parse::<u64>()?,
+            num2route: [None, None, None, None, None, None, None], // ; TimeBin::MAX_ROUTES],
+                                                                   // Vec::with_capacity(TimeBin::MAX_ROUTES),
         };
         for i in 0..TimeBin::MAX_ROUTES {
-            timebin.num2route.insert(i, RouteInfo::from_record(i, rec).ok());
+            // timebin.num2route.insert(i, RouteInfo::from_record(i, rec).ok());
+            timebin.num2route[i] = RouteInfo::from_record(i, rec).ok();
         }
         Ok(timebin)
     }
@@ -214,17 +234,24 @@ impl TimeBin {
         F: FnMut(&RouteInfo, &RouteInfo) -> Ordering,
     {
         let mut bestopt: &Option<Box<RouteInfo>> = &None;
-        for rtopt in &self.num2route {
+        for rtopt in &self.num2route[1..] {
             match rtopt {
                 None => continue,
                 Some(ref rtbox) => {
-                    if rtbox.apm_route_num == 1 {
-                        continue;
-                    }
+                    // r0 in the trace is the preferred route; it may
+                    // include multiple routes tied for best (which are
+                    // ECMP'd across).  when getting the best alternate
+                    // we *do* consider the individual components of r0
+                    // for best.  uncommenting the `if` below ignores
+                    // the components of r0 and only consider other
+                    // routes as alternates.
+                    // if rtbox.apm_route_num == 1 {
+                    //     continue;
+                    // }
                     match bestopt {
                         None => bestopt = rtopt,
                         Some(ref bestbox) => {
-                            if compare(bestbox.borrow(), rtbox.borrow()) == Ordering::Greater {
+                            if compare(rtbox.borrow(), bestbox.borrow()) == Ordering::Greater {
                                 bestopt = rtopt;
                             }
                         }
@@ -241,30 +268,51 @@ impl RouteInfo {
         let minrtt_ms_p50_ci_lb: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_lb", i)].parse()?;
         let minrtt_ms_p50_ci_ub: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_ub", i)].parse()?;
         let minrtt_ms_p50_ci_halfwidth = ((minrtt_ms_p50_ci_ub - minrtt_ms_p50_ci_lb) / 2) as u16;
-        let hdratio_p50_ci_lb: u32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse()?;
-        let hdratio_p50_ci_ub: u32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse()?;
-        let hdratio_p50_ci_halfwidth = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2;
+        let hdratio_p50_ci_lb: f32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse()?;
+        let hdratio_p50_ci_ub: f32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse()?;
+        let hdratio_p50_ci_halfwidth: f32 = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2.0;
+        let bgp_as_path_len: u8 = rec[&format!("r{}_bgp_as_path_len", i)].parse()?;
+        let bgp_as_path_wo_prepend: u8 =
+            rec[&format!("r{}_bgp_as_path_min_len_prepending_removed", i)].parse()?;
+        let (r0_hdratio_boot_diff_ci_lb, r0_hdratio_boot_diff_ci_ub) = if i == 0 {
+            (0.0f32, 0.0f32)
+        } else {
+            (
+                rec[&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_lb", i)].parse::<f32>()?,
+                rec[&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_ub", i)].parse::<f32>()?,
+            )
+        };
+        if r0_hdratio_boot_diff_ci_lb > r0_hdratio_boot_diff_ci_ub {
+            return Err(ParseError {
+                kind: ParseErrorKind::HdRatioBootstrapDiffCiBoundsMismatch,
+                message: format!(
+                    "lb: {}, ub: {}",
+                    r0_hdratio_boot_diff_ci_lb, r0_hdratio_boot_diff_ci_ub,
+                ),
+            });
+        }
+
         Ok(Box::new(RouteInfo {
             apm_route_num: rec[&format!("r{}_apm_route_num", i)].parse()?,
-            bgp_as_path_len: rec[&format!("r{}_bgp_as_path_len", i)].parse()?,
-            bgp_as_path_len_wo_prepend: rec
-                [&format!("r{}_bgp_as_path_min_len_prepending_removed", i)]
-                .parse()?,
-            bgp_as_path_prepending: string_to_bool(&rec[&format!("r{}_bgp_as_path_prepending", i)]),
+            bgp_as_path_len,
+            bgp_as_path_prepends: bgp_as_path_len - bgp_as_path_wo_prepend,
             peer_type: PeerType::new(
                 &rec[&format!("r{}_peer_type", i)],
                 &rec[&format!("r{}_peer_subtype", i)],
             )?,
             minrtt_num_samples: rec[&format!("r{}_num_samples", i)].parse()?,
-            minrtt_ms_p10: rec[&format!("r{}_minrtt_ms_p10", i)].parse()?,
+            // minrtt_ms_p10: rec[&format!("r{}_minrtt_ms_p10", i)].parse()?,
             minrtt_ms_p50: rec[&format!("r{}_minrtt_ms_p50", i)].parse()?,
             minrtt_ms_p50_ci_halfwidth,
-            minrtt_ms_p50_var: rec[&format!("r{}_minrtt_ms_p50_var", i)].parse()?,
+            // minrtt_ms_p50_var: rec[&format!("r{}_minrtt_ms_p50_var", i)].parse()?,
             hdratio_num_samples: rec[&format!("r{}_hdratio_num_samples", i)].parse()?,
-            hdratio: rec[&format!("r{}_hdratio", i)].parse()?,
-            hdratio_var: rec[&format!("r{}_hdratio_var", i)].parse()?,
+            hdratio: rec[&format!("r{}_hdratio_avg", i)].parse()?,
+            hdratio_var: rec[&format!("r{}_hdratio_normal_var", i)].parse()?,
             hdratio_p50: rec[&format!("r{}_hdratio_p50", i)].parse()?,
             hdratio_p50_ci_halfwidth,
+            hdratio_boot: rec[&format!("r{}_hdratio_avg_bootstrapped", i)].parse()?,
+            r0_hdratio_boot_diff_ci_lb,
+            r0_hdratio_boot_diff_ci_ub,
             px_nexthops: string_to_hash_u64(&rec[&format!("r{}_px_nexthops", i)]),
         }))
     }
@@ -275,20 +323,19 @@ impl RouteInfo {
         let var1 = (f32::from(rt1.minrtt_ms_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
         let var2 = (f32::from(rt2.minrtt_ms_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
         let md: f32 = f32::from(med1) - f32::from(med2);
-        let interval: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
-        (md, interval)
+        let halfwidth: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
+        (md, halfwidth)
     }
 
     pub fn hdratio_median_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let med1 = rt1.hdratio_p50;
         let med2 = rt2.hdratio_p50;
-        let var1 = (f32::from(rt1.hdratio_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
-        let var1 = (f32::from(rt1.hdratio_p50_ci_halfwidth) / CONFIDENCE_Z).powf(2.0);
-        let md: f32 = f32::from(med1) - f32::from(med2);
-        let interval: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
-        (md, interval)
+        let var1 = (rt1.hdratio_p50_ci_halfwidth / CONFIDENCE_Z).powf(2.0);
+        let var2 = (rt2.hdratio_p50_ci_halfwidth / CONFIDENCE_Z).powf(2.0);
+        let md: f32 = med1 - med2;
+        let halfwidth: f32 = CONFIDENCE_Z * (var1 + var2).sqrt();
+        (md, halfwidth)
     }
-
 
     pub fn hdratio_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let diff: f32 = rt1.hdratio - rt2.hdratio;
@@ -296,16 +343,36 @@ impl RouteInfo {
         let var2: f32 = rt2.hdratio_var;
         let n1: f32 = rt1.hdratio_num_samples as f32;
         let n2: f32 = rt2.hdratio_num_samples as f32;
-        let interval: f32 = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
-        (diff, interval)
+        let halfwidth: f32 = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
+        (diff, halfwidth)
+    }
+
+    pub fn hdratio_boot_diff_ci(bestalt: &RouteInfo, primary: &RouteInfo) -> (f32, f32, f32) {
+        let mut diff: f32 = bestalt.hdratio_boot - primary.hdratio_boot;
+        assert!(primary.r0_hdratio_boot_diff_ci_lb == 0.0);
+        assert!(primary.r0_hdratio_boot_diff_ci_ub == 0.0);
+        diff = f32::max(diff, bestalt.r0_hdratio_boot_diff_ci_lb);
+        diff = f32::min(diff, bestalt.r0_hdratio_boot_diff_ci_ub);
+        (bestalt.r0_hdratio_boot_diff_ci_lb, diff, bestalt.r0_hdratio_boot_diff_ci_ub)
     }
 
     pub fn compare_median_minrtt(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
-        rt1.minrtt_ms_p50.cmp(&rt2.minrtt_ms_p50)
+        // Return Greater if rt1.minrtt_ms_p50 < rt2.minrtt_ms_p50
+        rt2.minrtt_ms_p50.cmp(&rt1.minrtt_ms_p50)
+        // rt1.minrtt_ms_p50.cmp(&rt2.minrtt_ms_p50)
+    }
+
+    pub fn compare_median_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
+        // Return Greater if rt1.hdratio_p50 > rt2.hdratio_p50
+        rt1.hdratio_p50.partial_cmp(&rt2.hdratio_p50).unwrap_or(Ordering::Equal)
     }
 
     pub fn compare_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
         rt1.hdratio.partial_cmp(&rt2.hdratio).unwrap_or(Ordering::Equal)
+    }
+
+    pub fn compare_hdratio_bootstrap(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
+        rt1.hdratio_boot.partial_cmp(&rt2.hdratio_boot).unwrap_or(Ordering::Equal)
     }
 }
 
@@ -325,9 +392,9 @@ impl FromStr for ClientContinent {
     }
 }
 
-fn string_to_bool(s: &str) -> bool {
-    ["ok", "Ok", "OK", "true", "True", "false", "False", "0", "1"].contains(&s)
-}
+// fn string_to_bool(s: &str) -> bool {
+//     ["ok", "Ok", "OK", "true", "True", "false", "False", "0", "1"].contains(&s)
+// }
 
 fn string_to_hash_u64(string: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -346,6 +413,7 @@ pub(crate) mod tests {
             vip_metro: String::from("gru"),
             bgp_ip_prefix: "1.0.0.0/24".parse().unwrap(),
             client_continent: ClientContinent::Unknown,
+            client_country: ['B', 'R'],
         }
     }
 
@@ -356,13 +424,20 @@ pub(crate) mod tests {
             time2bin: BTreeMap<u64, TimeBin>,
         ) -> Option<BTreeMap<u64, TimeBin>> {
             let rcpid: Rc<PathId> = Rc::new(pid);
-            let path_traffic: u64 = time2bin.values().fold(0u64, |acc, e| acc + e.bytes_acked_sum);
+            let path_traffic: u128 =
+                time2bin.values().fold(0u128, |acc, e| acc + u128::from(e.bytes_acked_sum));
             self.total_bins = std::cmp::max(self.total_bins, time2bin.len() as u32);
             self.total_traffic += path_traffic;
-            if let Some(traffic) = self.pathid2traffic.insert(Rc::clone(&rcpid), path_traffic) {
-                self.total_traffic -= traffic;
+            let pinfo: PathInfo = PathInfo {
+                time2bin,
+                total_traffic: path_traffic,
+            };
+            if let Some(oldinfo) = self.pathid2info.insert(Rc::clone(&rcpid), pinfo) {
+                self.total_traffic -= oldinfo.total_traffic;
+                Some(oldinfo.time2bin)
+            } else {
+                None
             }
-            self.pathid2time2bin.insert(Rc::clone(&rcpid), time2bin)
         }
     }
 
@@ -373,10 +448,10 @@ pub(crate) mod tests {
             bin_duration_secs: u64,
             pri_minrtt_p50_even: u16,
             alt_minrtt_p50_even: u16,
-            minrtt_p50_var_even: f32,
+            minrtt_p50_ci_halfwidth_even: u16,
             pri_minrtt_p50_odd: u16,
             alt_minrtt_p50_odd: u16,
-            minrtt_p50_var_odd: f32,
+            minrtt_p50_ci_halfwidth_odd: u16,
         ) -> BTreeMap<u64, TimeBin> {
             let mut time2bin: BTreeMap<u64, TimeBin> = BTreeMap::new();
             for time in (0..7 * 86400).step_by(bin_duration_secs as usize) {
@@ -385,7 +460,7 @@ pub(crate) mod tests {
                         time,
                         pri_minrtt_p50_even,
                         alt_minrtt_p50_even,
-                        minrtt_p50_var_even,
+                        minrtt_p50_ci_halfwidth_even,
                     );
                     time2bin.insert(time, timebin);
                 } else {
@@ -393,7 +468,7 @@ pub(crate) mod tests {
                         time,
                         pri_minrtt_p50_odd,
                         alt_minrtt_p50_odd,
-                        minrtt_p50_var_odd,
+                        minrtt_p50_ci_halfwidth_odd,
                     );
                     time2bin.insert(time, timebin);
                 }
@@ -405,15 +480,15 @@ pub(crate) mod tests {
             time: u64,
             pri_minrtt_p50: u16,
             alt_minrtt_p50: u16,
-            minrtt_ms_p50_var: f32,
+            minrtt_p50_ci_halfwidth: u16,
         ) -> TimeBin {
             let mut timebin = TimeBin {
                 time_bucket: time,
                 bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
-                num2route: vec![None; TimeBin::MAX_ROUTES],
+                num2route: [None, None, None, None, None, None, None],
             };
-            let primary = RouteInfo::mock_minrtt_p50(1, pri_minrtt_p50, minrtt_ms_p50_var);
-            let alternate = RouteInfo::mock_minrtt_p50(2, alt_minrtt_p50, minrtt_ms_p50_var);
+            let primary = RouteInfo::mock_minrtt_p50(1, pri_minrtt_p50, minrtt_p50_ci_halfwidth);
+            let alternate = RouteInfo::mock_minrtt_p50(2, alt_minrtt_p50, minrtt_p50_ci_halfwidth);
             timebin.num2route[0] = Some(Box::new(primary));
             timebin.num2route[1] = Some(Box::new(alternate));
             timebin
@@ -460,10 +535,85 @@ pub(crate) mod tests {
             let mut timebin = TimeBin {
                 time_bucket: time,
                 bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
-                num2route: vec![None; TimeBin::MAX_ROUTES],
+                num2route: [None, None, None, None, None, None, None],
             };
             let primary = RouteInfo::mock_hdratio(1, pri_hdratio, hdratio_var);
             let alternate = RouteInfo::mock_hdratio(2, alt_hdratio, hdratio_var);
+            timebin.num2route[0] = Some(Box::new(primary));
+            timebin.num2route[1] = Some(Box::new(alternate));
+            timebin
+        }
+
+        pub(crate) fn mock_week_hdratio_p50(
+            bin_duration_secs: u64,
+            pri_hdratio50_even: f32,
+            alt_hdratio50_even: f32,
+            hdratio50_ci_halfwidth_even: f32,
+            pri_hdratio50_odd: f32,
+            alt_hdratio50_odd: f32,
+            hdratio50_ci_halfwidth_odd: f32,
+        ) -> BTreeMap<u64, TimeBin> {
+            let mut time2bin: BTreeMap<u64, TimeBin> = BTreeMap::new();
+            for time in (0..7 * 86400).step_by(bin_duration_secs as usize) {
+                if time % (2 * bin_duration_secs) == 0 {
+                    let timebin = TimeBin::mock_hdratio_p50(
+                        time,
+                        pri_hdratio50_even,
+                        alt_hdratio50_even,
+                        hdratio50_ci_halfwidth_even,
+                    );
+                    time2bin.insert(time, timebin);
+                } else {
+                    let timebin = TimeBin::mock_hdratio_p50(
+                        time,
+                        pri_hdratio50_odd,
+                        alt_hdratio50_odd,
+                        hdratio50_ci_halfwidth_odd,
+                    );
+                    time2bin.insert(time, timebin);
+                }
+            }
+            time2bin
+        }
+
+        pub(crate) fn mock_hdratio_p50(
+            time: u64,
+            pri_hdratio_p50: f32,
+            alt_hdratio_p50: f32,
+            hdratio_p50_ci_halfwidth: f32,
+        ) -> TimeBin {
+            let mut timebin = TimeBin {
+                time_bucket: time,
+                bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
+                num2route: [None, None, None, None, None, None, None],
+            };
+            let primary = RouteInfo::mock_hdratio_p50(1, pri_hdratio_p50, hdratio_p50_ci_halfwidth);
+            let alternate =
+                RouteInfo::mock_hdratio_p50(2, alt_hdratio_p50, hdratio_p50_ci_halfwidth);
+            timebin.num2route[0] = Some(Box::new(primary));
+            timebin.num2route[1] = Some(Box::new(alternate));
+            timebin
+        }
+
+        pub(crate) fn mock_hdratio_boot(
+            time: u64,
+            pri_hdratio_boot: f32,
+            alt_hdratio_boot: f32,
+            hdratio_boot_diff_ci_lb: f32,
+            hdratio_boot_diff_ci_ub: f32,
+        ) -> TimeBin {
+            let mut timebin = TimeBin {
+                time_bucket: time,
+                bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
+                num2route: [None, None, None, None, None, None, None],
+            };
+            let primary = RouteInfo::mock_hdratio_boot(1, pri_hdratio_boot, 0.0, 0.0);
+            let alternate = RouteInfo::mock_hdratio_boot(
+                2,
+                alt_hdratio_boot,
+                hdratio_boot_diff_ci_lb,
+                hdratio_boot_diff_ci_ub,
+            );
             timebin.num2route[0] = Some(Box::new(primary));
             timebin.num2route[1] = Some(Box::new(alternate));
             timebin
@@ -476,22 +626,24 @@ pub(crate) mod tests {
         pub(crate) fn mock_minrtt_p50(
             apm_route_num: u8,
             minrtt_ms_p50: u16,
-            minrtt_ms_p50_var: f32,
+            minrtt_ms_p50_ci_halfwidth: u16,
         ) -> RouteInfo {
             RouteInfo {
                 apm_route_num,
                 bgp_as_path_len: 3,
-                bgp_as_path_len_wo_prepend: 2,
-                bgp_as_path_prepending: true,
+                bgp_as_path_prepends: 1,
                 peer_type: PeerType::Transit,
                 minrtt_num_samples: 200,
-                minrtt_ms_p10: 10,
                 minrtt_ms_p50,
-                minrtt_ms_p50_ci_halfwidth: 1,
-                minrtt_ms_p50_var,
+                minrtt_ms_p50_ci_halfwidth,
                 hdratio_num_samples: 200,
                 hdratio: 0.9,
                 hdratio_var: 0.01,
+                hdratio_p50: 1.0,
+                hdratio_p50_ci_halfwidth: 0.01,
+                hdratio_boot: 0.9,
+                r0_hdratio_boot_diff_ci_lb: 0.85,
+                r0_hdratio_boot_diff_ci_ub: 0.95,
                 px_nexthops: 1,
             }
         }
@@ -500,17 +652,70 @@ pub(crate) mod tests {
             RouteInfo {
                 apm_route_num,
                 bgp_as_path_len: 3,
-                bgp_as_path_len_wo_prepend: 2,
-                bgp_as_path_prepending: true,
+                bgp_as_path_prepends: 1,
                 peer_type: PeerType::Transit,
                 minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
-                minrtt_ms_p10: 10,
                 minrtt_ms_p50: 20,
                 minrtt_ms_p50_ci_halfwidth: 1,
-                minrtt_ms_p50_var: 10.0,
                 hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
                 hdratio,
                 hdratio_var,
+                hdratio_p50: 1.0,
+                hdratio_p50_ci_halfwidth: 0.01,
+                hdratio_boot: 0.9,
+                r0_hdratio_boot_diff_ci_lb: 0.85,
+                r0_hdratio_boot_diff_ci_ub: 0.95,
+                px_nexthops: 1,
+            }
+        }
+
+        pub(crate) fn mock_hdratio_p50(
+            apm_route_num: u8,
+            hdratio_p50: f32,
+            hdratio_p50_ci_halfwidth: f32,
+        ) -> RouteInfo {
+            RouteInfo {
+                apm_route_num,
+                bgp_as_path_len: 3,
+                bgp_as_path_prepends: 1,
+                peer_type: PeerType::Transit,
+                minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                minrtt_ms_p50: 20,
+                minrtt_ms_p50_ci_halfwidth: 1,
+                hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                hdratio: 0.9,
+                hdratio_var: 0.2,
+                hdratio_p50,
+                hdratio_p50_ci_halfwidth,
+                hdratio_boot: 0.9,
+                r0_hdratio_boot_diff_ci_lb: 0.85,
+                r0_hdratio_boot_diff_ci_ub: 0.95,
+                px_nexthops: 1,
+            }
+        }
+
+        pub(crate) fn mock_hdratio_boot(
+            apm_route_num: u8,
+            hdratio_boot: f32,
+            ci_lb: f32,
+            ci_ub: f32,
+        ) -> RouteInfo {
+            RouteInfo {
+                apm_route_num,
+                bgp_as_path_len: 3,
+                bgp_as_path_prepends: 1,
+                peer_type: PeerType::Transit,
+                minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                minrtt_ms_p50: 20,
+                minrtt_ms_p50_ci_halfwidth: 1,
+                hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
+                hdratio: 0.9,
+                hdratio_var: 0.1,
+                hdratio_p50: 1.0,
+                hdratio_p50_ci_halfwidth: 0.01,
+                hdratio_boot,
+                r0_hdratio_boot_diff_ci_lb: ci_lb,
+                r0_hdratio_boot_diff_ci_ub: ci_ub,
                 px_nexthops: 1,
             }
         }
@@ -520,39 +725,38 @@ pub(crate) mod tests {
     fn test_db_insert() {
         let mut database: DB = DB::default();
 
-        let time2bin =
-            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
+        let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100, 50, 51, 100);
         let nbins: u64 = time2bin.len() as u64;
 
         let pid1 = make_path_id();
         assert!(database.insert(pid1, time2bin).is_none());
-        assert!(database.total_traffic == nbins * TimeBin::MOCK_TOTAL_BYTES);
+        assert!(database.total_traffic == u128::from(nbins * TimeBin::MOCK_TOTAL_BYTES));
 
-        let time2bin =
-            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
+        let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100, 50, 51, 100);
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
             client_continent: ClientContinent::Unknown,
+            client_country: ['B', 'R'],
         };
         assert!(database.insert(pid2, time2bin).is_none());
-        assert!(database.total_traffic == 2 * nbins * TimeBin::MOCK_TOTAL_BYTES);
+        assert!(database.total_traffic == u128::from(2 * nbins * TimeBin::MOCK_TOTAL_BYTES));
 
         let time2bin =
-            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS / 2, 50, 51, 100.0, 50, 51, 100.0);
+            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS / 2, 50, 51, 100, 50, 51, 100);
         let pid2 = PathId {
             vip_metro: "gru".to_string(),
             bgp_ip_prefix: "2.0.0.0/24".parse().unwrap(),
             client_continent: ClientContinent::Unknown,
+            client_country: ['B', 'R'],
         };
         assert!(database.insert(pid2, time2bin).is_some());
-        assert!(database.total_traffic == 3 * nbins * TimeBin::MOCK_TOTAL_BYTES);
+        assert!(database.total_traffic == u128::from(3 * nbins * TimeBin::MOCK_TOTAL_BYTES));
     }
 
     #[test]
     fn test_timebin_mock_week() {
-        let time2bin =
-            TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100.0, 50, 51, 100.0);
+        let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 100, 50, 51, 100);
         assert!(time2bin.len() == (7 * 86400 / BIN_DURATION_SECS) as usize);
         assert!(time2bin.values().fold(true, |_, e| e.num2route[0].is_some()));
         assert!(time2bin.values().fold(true, |_, e| e.num2route[1].is_some()));
@@ -565,27 +769,57 @@ pub(crate) mod tests {
         let pri_minrtt: u16 = 50;
         let alt1_minrtt: u16 = 100;
         let alt2_minrtt: u16 = 60;
-        let minrtt_var: f32 = 100.0;
-        let mut timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt1_minrtt, minrtt_var);
+        let minrtt_ci_halfwidth: u16 = 100;
+        let mut timebin: TimeBin =
+            TimeBin::mock_minrtt_p50(0, pri_minrtt, alt1_minrtt, minrtt_ci_halfwidth);
         let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt1_minrtt);
-        timebin.num2route[2] = Some(Box::new(RouteInfo::mock_minrtt_p50(3, 60, 100.0)));
+        timebin.num2route[2] = Some(Box::new(RouteInfo::mock_minrtt_p50(3, 60, 100)));
         let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt2_minrtt);
+
+        let pri_hdratio_boot: f32 = 0.9;
+        let alt1_hdratio_boot: f32 = 0.8;
+        let alt2_hdratio_boot: f32 = 0.95;
+        let alt1_hdratio_boot_diff_ci_lb: f32 = -0.15;
+        let alt1_hdratio_boot_diff_ci_ub: f32 = -0.05;
+        let alt2_hdratio_boot_diff_ci_lb: f32 = 0.0;
+        let alt2_hdratio_boot_diff_ci_ub: f32 = 0.1;
+        let mut timebin: TimeBin = TimeBin::mock_hdratio_boot(
+            0,
+            pri_hdratio_boot,
+            alt1_hdratio_boot,
+            alt1_hdratio_boot_diff_ci_lb,
+            alt1_hdratio_boot_diff_ci_ub,
+        );
+        let rtinfo =
+            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        assert!((rtinfo.hdratio_boot - alt1_hdratio_boot).abs() < 1e-6);
+        timebin.num2route[2] = Some(Box::new(RouteInfo::mock_hdratio_boot(
+            3,
+            alt2_hdratio_boot,
+            alt2_hdratio_boot_diff_ci_lb,
+            alt2_hdratio_boot_diff_ci_ub,
+        )));
+        let rtinfo =
+            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        assert!((rtinfo.hdratio_boot - alt2_hdratio_boot).abs() < 1e-6);
     }
 
     #[test]
     fn test_minrtt_median_diff_ci_small() {
         let pri_minrtt: u16 = 50;
         let alt_minrtt: u16 = 60;
-        let minrtt_var: f32 = 2.0;
-        let timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_var);
+        let minrtt_ci_halfwidth: u16 = 2;
+        let timebin: TimeBin =
+            TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_ci_halfwidth);
         let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
         let altbox: &RouteInfo =
             timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(pribox, altbox);
         assert!((diff - (f32::from(pri_minrtt) - f32::from(alt_minrtt))).abs() < 1e-6);
-        let interval: f32 = 2.0 * (minrtt_var + minrtt_var).sqrt();
+        let var: f32 = (f32::from(minrtt_ci_halfwidth) / 2.0).powf(2.0);
+        let interval: f32 = 2.0 * (var + var).sqrt();
         assert!((halfwidth - interval).abs() < 1e-6);
     }
 
@@ -593,23 +827,68 @@ pub(crate) mod tests {
     fn test_minrtt_median_diff_ci_large() {
         let pri_minrtt: u16 = 50;
         let alt_minrtt: u16 = 60;
-        let minrtt_var: f32 = 100.0;
-        let timebin: TimeBin = TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_var);
+        let minrtt_ci_halfwidth: u16 = 100;
+        let timebin: TimeBin =
+            TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_ci_halfwidth);
         let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
         let altbox: &RouteInfo =
             timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(pribox, altbox);
         assert!((diff - (f32::from(pri_minrtt) - f32::from(alt_minrtt))).abs() < 1e-6);
-        let interval: f32 = 2.0 * (minrtt_var + minrtt_var).sqrt();
+        let var: f32 = (f32::from(minrtt_ci_halfwidth) / 2.0).powf(2.0);
+        let interval: f32 = 2.0 * (var + var).sqrt();
         assert!((halfwidth - interval).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hdratio_boot_diff_ci_small() {
+        let pri_hdratio_boot: f32 = 0.9;
+        let alt_hdratio_boot: f32 = 0.8;
+        let hdratio_boot_diff_ci_lb: f32 = -0.15;
+        let hdratio_boot_diff_ci_ub: f32 = -0.05;
+        let timebin: TimeBin = TimeBin::mock_hdratio_boot(
+            0,
+            pri_hdratio_boot,
+            alt_hdratio_boot,
+            hdratio_boot_diff_ci_lb,
+            hdratio_boot_diff_ci_ub,
+        );
+        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
+        let altbox: &RouteInfo =
+            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let (lb, diff, ub) = RouteInfo::hdratio_boot_diff_ci(altbox, pribox);
+        assert!((diff - (alt_hdratio_boot - pri_hdratio_boot)).abs() < 1e-6);
+        assert!(lb <= ub);
+        assert!(lb <= diff);
+        assert!(diff <= ub);
+
+        let pri_hdratio_boot: f32 = 0.8;
+        let alt_hdratio_boot: f32 = 0.9;
+        let hdratio_boot_diff_ci_lb: f32 = 0.05;
+        let hdratio_boot_diff_ci_ub: f32 = 0.15;
+        let timebin: TimeBin = TimeBin::mock_hdratio_boot(
+            0,
+            pri_hdratio_boot,
+            alt_hdratio_boot,
+            hdratio_boot_diff_ci_lb,
+            hdratio_boot_diff_ci_ub,
+        );
+        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
+        let altbox: &RouteInfo =
+            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let (lb, diff, ub) = RouteInfo::hdratio_boot_diff_ci(altbox, pribox);
+        assert!((diff - (alt_hdratio_boot - pri_hdratio_boot)).abs() < 1e-6);
+        assert!(lb <= ub);
+        assert!(lb <= diff);
+        assert!(diff <= ub);
     }
 
     #[test]
     fn test_peer_type_ord() {
         let transit = PeerType::Transit;
-        let paid = PeerType::Peering(PeerSubtype::Paid);
-        let public = PeerType::Peering(PeerSubtype::Public);
-        let private = PeerType::Peering(PeerSubtype::Private);
+        let paid = PeerType::PeeringPaid;
+        let public = PeerType::PeeringPublic;
+        let private = PeerType::PeeringPrivate;
         assert!(transit > paid);
         assert!(transit > public);
         assert!(transit > private);
