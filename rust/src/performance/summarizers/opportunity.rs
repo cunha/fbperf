@@ -302,8 +302,7 @@ pub fn dump_opportunity_vs_relationship(
     dbsum: &perfstats::DBSummary,
     path: &PathBuf,
 ) -> Result<(), io::Error> {
-    let mut peering2counters = compute_opportunity_vs_relationship(dbsum);
-    peering2counters.insert((db::PeerType::Transit, db::PeerType::Transit), (std::u128::MAX, 2, 3));
+    let peering2counters = compute_opportunity_vs_relationship(dbsum);
 
     let mut filepath = path.clone();
     filepath.push("opp-vs-relationship.txt");

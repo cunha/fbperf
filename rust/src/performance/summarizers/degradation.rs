@@ -74,7 +74,7 @@ pub struct HdRatioLowerBoundDegradationSummarizer {
 /// which will find the "best" `TimeBin` for each `PathId` in the
 /// dataset. Thresholds below control filters applied to the algorithm
 /// to find the best `TimeBin`.
-pub struct HdRatioP50LowerBoundDegradationSummarizer {
+pub struct HdRatio50LowerBoundDegradationSummarizer {
     /// The minimum difference between the best `TimeBin` and other
     /// `TimeBin`s considered degradation.
     min_diff_degradation: f32,
@@ -260,7 +260,7 @@ impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
     }
 }
 
-impl HdRatioP50LowerBoundDegradationSummarizer {
+impl HdRatio50LowerBoundDegradationSummarizer {
     pub fn new(
         baseline_percentile: f32,
         min_diff_degradation: f32,
@@ -268,7 +268,7 @@ impl HdRatioP50LowerBoundDegradationSummarizer {
         max_hdratio50_ci_halfwidth: f32,
         db: &DB,
     ) -> Self {
-        let mut sum = Self {
+        let mut sum = HdRatio50LowerBoundDegradationSummarizer {
             min_diff_degradation,
             max_diff_ci_halfwidth,
             max_hdratio50_ci_halfwidth,
@@ -298,7 +298,7 @@ impl HdRatioP50LowerBoundDegradationSummarizer {
     }
 }
 
-impl TimeBinSummarizer for HdRatioP50LowerBoundDegradationSummarizer {
+impl TimeBinSummarizer for HdRatio50LowerBoundDegradationSummarizer {
     fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
         match (self.pathid2baseroute.get(pathid), bin.get_primary_route()) {
             (None, _) => TimeBinSummary::WideConfidenceInterval,
@@ -551,9 +551,9 @@ mod tests {
         assert!(db.insert(pid1.clone(), time2bin).is_none());
         assert!(db.total_traffic == u128::from(nbins * TimeBin::MOCK_TOTAL_BYTES));
 
-        let sum = HdRatioP50LowerBoundDegradationSummarizer::new(1.0, 0.1, 0.1, 0.1, &db);
+        let sum = HdRatio50LowerBoundDegradationSummarizer::new(1.0, 0.1, 0.1, 0.1, &db);
         assert!((sum.pathid2baseroute[&pid1].hdratio_p50 - 0.9).abs() < 1e-6);
-        let sum = HdRatioP50LowerBoundDegradationSummarizer::new(0.9, 0.1, 0.1, 0.1, &db);
+        let sum = HdRatio50LowerBoundDegradationSummarizer::new(0.9, 0.1, 0.1, 0.1, &db);
         assert!((sum.pathid2baseroute[&pid1].hdratio_p50 - 0.8).abs() < 1e-6);
 
         let mut db: DB = DB::default();
@@ -563,9 +563,9 @@ mod tests {
         assert!(db.insert(pid1.clone(), time2bin).is_none());
         assert!(db.total_traffic == u128::from(nbins * TimeBin::MOCK_TOTAL_BYTES));
 
-        let sum = HdRatioP50LowerBoundDegradationSummarizer::new(1.0, 0.1, 0.1, 0.1, &db);
+        let sum = HdRatio50LowerBoundDegradationSummarizer::new(1.0, 0.1, 0.1, 0.1, &db);
         assert!((sum.pathid2baseroute[&pid1].hdratio_p50 - 0.8).abs() < 1e-6);
-        let sum = HdRatioP50LowerBoundDegradationSummarizer::new(0.9, 0.1, 0.1, 0.2, &db);
+        let sum = HdRatio50LowerBoundDegradationSummarizer::new(0.9, 0.1, 0.1, 0.2, &db);
         assert!((sum.pathid2baseroute[&pid1].hdratio_p50 - 0.9).abs() < 1e-6);
     }
 
@@ -588,7 +588,7 @@ mod tests {
 
         for i in 0..nbins {
             let pct: f32 = i as f32 / nbins as f32;
-            let sum = HdRatioP50LowerBoundDegradationSummarizer::new(pct, 0.0, 0.1, 0.1, &db);
+            let sum = HdRatio50LowerBoundDegradationSummarizer::new(pct, 0.0, 0.1, 0.1, &db);
             let offset = (STEPSIZE * (sum.pathid2baseroute[&pid1].hdratio_p50 - 0.8)) as usize;
             assert!(offset >= std::cmp::max(i, 2) - 2 && offset <= i + 1);
         }
@@ -609,7 +609,7 @@ mod tests {
             // Half the timebins are ignored because of high variance,
             // so we have half the number of valid bins:
             let pct: f32 = i as f32 / nbins as f32;
-            let sum = HdRatioP50LowerBoundDegradationSummarizer::new(pct, 0.0, 0.1, 0.1, &db);
+            let sum = HdRatio50LowerBoundDegradationSummarizer::new(pct, 0.0, 0.1, 0.1, &db);
             let offset = (STEPSIZE * (sum.pathid2baseroute[&pid1].hdratio_p50 - 0.8)) as usize;
             assert!(offset >= std::cmp::max(i, 3) - 3 && offset <= i + 1);
             // this f32 precision ::facepalm::

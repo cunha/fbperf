@@ -28,10 +28,11 @@ struct Opt {
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
-    let max_minrtt50_diff_ci_halfwidth: f32 = 25.0;
-    let max_minrtt50_ci_halfwidth: u16 = 25;
-    let max_hdratio_diff_ci_halfwidth: f32 = 0.25;
-    let max_hdratio_ci_halfwidth: f32 = 0.25;
+    let max_minrtt50_diff_ci_halfwidth: f32 = 20.0;
+    let max_minrtt50_ci_halfwidth: u16 = 20;
+    let max_hdratio50_diff_ci_halfwidth: f32 = 0.20;
+    let max_hdratio50_ci_halfwidth: f32 = 0.20;
+    let max_hdratio_boot_diff_ci_fullwidth: f32 = 0.20;
     let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
     for &min_minrtt50_diff in [0, 5, 10, 20, 50].iter() {
         let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
@@ -50,17 +51,24 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         summarizers.push(ml);
     }
     for &min_hdratio_diff in [0.0, 0.02, 0.05, 0.1, 0.2].iter() {
-        let hl = Box::new(summarizers::opportunity::HdRatioImprovementSummarizer {
-            hdratio_min_improv: min_hdratio_diff,
-            max_hdratio_diff_ci_halfwidth,
+        let hl = Box::new(summarizers::opportunity::HdRatio50ImprovementSummarizer {
+            hdratio50_min_improv: min_hdratio_diff,
+            max_hdratio50_diff_ci_halfwidth,
             compare_lower_bound: true,
         });
         summarizers.push(hl);
-        let hl = Box::new(summarizers::degradation::HdRatioLowerBoundDegradationSummarizer::new(
+        let hl =
+            Box::new(summarizers::opportunity::HdRatioBootstrapDifferenceImprovementSummarizer {
+                hdratio_boot_min_improv: min_hdratio_diff,
+                max_hdratio_boot_diff_ci_fullwidth,
+                compare_lower_bound: true,
+            });
+        summarizers.push(hl);
+        let hl = Box::new(summarizers::degradation::HdRatio50LowerBoundDegradationSummarizer::new(
             0.9,
             min_hdratio_diff,
-            max_hdratio_diff_ci_halfwidth,
-            max_hdratio_ci_halfwidth,
+            max_hdratio50_diff_ci_halfwidth,
+            max_hdratio50_ci_halfwidth,
             db,
         ));
         summarizers.push(hl);
