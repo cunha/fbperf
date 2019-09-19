@@ -1,12 +1,12 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::{btree_map, BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
@@ -44,7 +44,7 @@ pub enum ClientContinent {
 
 #[derive(Default)]
 pub struct DB {
-    pub pathid2info: HashMap<Rc<PathId>, PathInfo>,
+    pub pathid2info: HashMap<Arc<PathId>, PathInfo>,
     pub rows: u32,
     pub total_bins: u32,
     pub total_traffic: u128,
@@ -507,7 +507,7 @@ pub(crate) mod tests {
             pid: PathId,
             time2bin: BTreeMap<u64, TimeBin>,
         ) -> Option<BTreeMap<u64, TimeBin>> {
-            let rcpid: Rc<PathId> = Rc::new(pid);
+            let arcpid: Arc<PathId> = Arc::new(pid);
             let path_traffic: u128 =
                 time2bin.values().fold(0u128, |acc, e| acc + u128::from(e.bytes_acked_sum));
             self.total_bins = std::cmp::max(self.total_bins, time2bin.len() as u32);
@@ -516,7 +516,7 @@ pub(crate) mod tests {
                 time2bin,
                 total_traffic: path_traffic,
             };
-            if let Some(oldinfo) = self.pathid2info.insert(Rc::clone(&rcpid), pinfo) {
+            if let Some(oldinfo) = self.pathid2info.insert(Arc::clone(&arcpid), pinfo) {
                 self.total_traffic -= oldinfo.total_traffic;
                 Some(oldinfo.time2bin)
             } else {

@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use log::{error, info};
 use num_enum::TryFromPrimitive;
@@ -119,7 +119,7 @@ pub struct TemporalConfig {
 
 #[derive(Default)]
 pub struct DBSummary {
-    pub pathid2summary: HashMap<Rc<db::PathId>, PathSummary>,
+    pub pathid2summary: HashMap<Arc<db::PathId>, PathSummary>,
     pub total_shifted_bytes: u128,
     pub total_valid_bytes: u128,
     shifted_bytes: [[u128; db::ClientContinent::SIZE as usize]; TemporalBehavior::SIZE as usize],
@@ -196,7 +196,7 @@ impl DBSummary {
                 psum.valid_bytes;
             dbsum.total_bytes[psum.temporal_behavior as usize][pid.client_continent as usize] +=
                 db.pathid2info[pid].total_traffic;
-            dbsum.pathid2summary.insert(Rc::clone(&pid), psum);
+            dbsum.pathid2summary.insert(Arc::clone(&pid), psum);
         }
         dbsum
     }

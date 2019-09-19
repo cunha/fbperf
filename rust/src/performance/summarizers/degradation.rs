@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use log::info;
 
@@ -35,7 +35,7 @@ pub struct MinRtt50LowerBoundDegradationSummarizer {
     /// This stores the primary `RouteInfo` for the best `TimeBin` for
     /// each `PathId`, chosen based on the thresholds above. `PathId`s
     /// without a valid best `TimeBin` are not included in the mapping.
-    pathid2baseroute: HashMap<Rc<PathId>, Box<RouteInfo>>,
+    pathid2baseroute: HashMap<Arc<PathId>, Box<RouteInfo>>,
 }
 
 /// Summarize HD-ratio P50 degradation over time comparing primary routes.
@@ -67,7 +67,7 @@ pub struct HdRatio50LowerBoundDegradationSummarizer {
     /// This stores the primary `RouteInfo` for the best `TimeBin` for
     /// each `PathId`, chosen based on the thresholds above. `PathId`s
     /// without a valid best `TimeBin` are not included in the mapping.
-    pathid2baseroute: HashMap<Rc<PathId>, Box<RouteInfo>>,
+    pathid2baseroute: HashMap<Arc<PathId>, Box<RouteInfo>>,
 }
 
 impl MinRtt50LowerBoundDegradationSummarizer {
@@ -102,7 +102,7 @@ impl MinRtt50LowerBoundDegradationSummarizer {
             }
             valid.sort_by(RouteInfo::compare_median_minrtt);
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
-            sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[valid.len() - 1 - i]));
+            sum.pathid2baseroute.insert(Arc::clone(&pathid), Box::new(valid[valid.len() - 1 - i]));
         }
         info!(
             "MinRtt50LowerBoundDegradationSummarizer paths in={} out={}",
@@ -187,7 +187,7 @@ impl HdRatio50LowerBoundDegradationSummarizer {
             }
             valid.sort_by(RouteInfo::compare_median_hdratio);
             let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
-            sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
+            sum.pathid2baseroute.insert(Arc::clone(&pathid), Box::new(valid[i]));
         }
         info!(
             "HdRatio50LowerBoundDegradationSummarizer paths in={} out={}",
