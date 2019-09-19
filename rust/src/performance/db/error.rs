@@ -16,8 +16,9 @@ pub(super) enum ParseErrorKind {
     VipMetroIsNull,
     ClientCountryIsNull,
     UnknownPeeringRelationship,
-    HdRatioBootstrapDiffCiBoundsMismatch,
     RepeatedTimebin,
+    NotEnoughMinRttSamples,
+    MissingPrimaryRoute,
 }
 
 impl fmt::Display for ParseError {

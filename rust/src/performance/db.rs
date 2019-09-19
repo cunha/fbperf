@@ -222,16 +222,54 @@ impl TimeBin {
         };
         for i in 0..TimeBin::MAX_ROUTES {
             // timebin.num2route.insert(i, RouteInfo::from_record(i, rec).ok());
-            timebin.num2route[i] = RouteInfo::from_record(i, rec).ok();
+            timebin.num2route[i] = match RouteInfo::from_record(i, rec) {
+                Ok(rtinfo) => Some(rtinfo),
+                Err(e) => {
+                    if i == 0 {
+                        return Err(ParseError {
+                            kind: ParseErrorKind::MissingPrimaryRoute,
+                            message: "missing primary route".to_string(),
+                        });
+                    } else if e.kind == ParseErrorKind::NotEnoughMinRttSamples {
+                        return Err(e);
+                    } else {
+                        None
+                    }
+                }
+            };
         }
         Ok(timebin)
     }
-    pub fn get_primary_route(&self) -> &Option<Box<RouteInfo>> {
-        self.num2route.get(0).unwrap()
-    }
-    pub fn get_best_alternate<F>(&self, mut compare: F) -> &Option<Box<RouteInfo>>
+
+    fn get_primary_route<F>(&self, check_valid: F) -> &Option<Box<RouteInfo>>
     where
-        F: FnMut(&RouteInfo, &RouteInfo) -> Ordering,
+        F: Fn(&RouteInfo) -> bool,
+    {
+        let optbox: &Option<Box<RouteInfo>> = self.num2route.get(0).unwrap();
+        match &optbox {
+            None => &None,
+            Some(rtbox) => {
+                if check_valid(rtbox.borrow()) {
+                    optbox
+                } else {
+                    &None
+                }
+            }
+        }
+    }
+
+    pub fn get_primary_route_minrtt(&self) -> &Option<Box<RouteInfo>> {
+        self.get_primary_route(RouteInfo::minrtt_valid)
+    }
+
+    pub fn get_primary_route_hdratio(&self) -> &Option<Box<RouteInfo>> {
+        self.get_primary_route(RouteInfo::hdratio_valid)
+    }
+
+    fn get_best_alternate<F, G>(&self, compare: F, check_valid: G) -> &Option<Box<RouteInfo>>
+    where
+        F: Fn(&RouteInfo, &RouteInfo) -> Ordering,
+        G: Fn(&RouteInfo) -> bool,
     {
         let mut bestopt: &Option<Box<RouteInfo>> = &None;
         for rtopt in &self.num2route[1..] {
@@ -248,6 +286,9 @@ impl TimeBin {
                     // if rtbox.apm_route_num == 1 {
                     //     continue;
                     // }
+                    if !check_valid(rtbox.borrow()) {
+                        continue;
+                    }
                     match bestopt {
                         None => bestopt = rtopt,
                         Some(ref bestbox) => {
@@ -261,56 +302,91 @@ impl TimeBin {
         }
         bestopt
     }
+
+    pub fn get_best_alternate_minrtt<F>(&self, compare: F) -> &Option<Box<RouteInfo>>
+    where
+        F: Fn(&RouteInfo, &RouteInfo) -> Ordering,
+    {
+        self.get_best_alternate(compare, RouteInfo::minrtt_valid)
+    }
+
+    pub fn get_best_alternate_hdratio<F>(&self, compare: F) -> &Option<Box<RouteInfo>>
+    where
+        F: Fn(&RouteInfo, &RouteInfo) -> Ordering,
+    {
+        self.get_best_alternate(compare, RouteInfo::hdratio_valid)
+    }
 }
 
 impl RouteInfo {
+    pub const MIN_SAMPLES: u32 = 30;
+
     fn from_record(i: usize, rec: &HashMap<String, String>) -> Result<Box<RouteInfo>, ParseError> {
-        let minrtt_ms_p50_ci_lb: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_lb", i)].parse()?;
-        let minrtt_ms_p50_ci_ub: u32 = rec[&format!("r{}_minrtt_ms_p50_ci_ub", i)].parse()?;
-        let minrtt_ms_p50_ci_halfwidth = ((minrtt_ms_p50_ci_ub - minrtt_ms_p50_ci_lb) / 2) as u16;
-        let hdratio_p50_ci_lb: f32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse()?;
-        let hdratio_p50_ci_ub: f32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse()?;
-        let hdratio_p50_ci_halfwidth: f32 = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2.0;
-        let bgp_as_path_len: u8 = rec[&format!("r{}_bgp_as_path_len", i)].parse()?;
-        let bgp_as_path_wo_prepend: u8 =
-            rec[&format!("r{}_bgp_as_path_min_len_prepending_removed", i)].parse()?;
-        let (r0_hdratio_boot_diff_ci_lb, r0_hdratio_boot_diff_ci_ub) = if i == 0 {
-            (0.0f32, 0.0f32)
-        } else {
-            (
-                rec[&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_lb", i)].parse::<f32>()?,
-                rec[&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_ub", i)].parse::<f32>()?,
-            )
-        };
-        if r0_hdratio_boot_diff_ci_lb > r0_hdratio_boot_diff_ci_ub {
+        let apm_route_num: u8 = rec[&format!("r{}_apm_route_num", i)].parse()?;
+        let minrtt_num_samples: u32 = rec[&format!("r{}_num_samples", i)].parse()?;
+        if minrtt_num_samples < RouteInfo::MIN_SAMPLES {
             return Err(ParseError {
-                kind: ParseErrorKind::HdRatioBootstrapDiffCiBoundsMismatch,
-                message: format!(
-                    "lb: {}, ub: {}",
-                    r0_hdratio_boot_diff_ci_lb, r0_hdratio_boot_diff_ci_ub,
-                ),
+                kind: ParseErrorKind::NotEnoughMinRttSamples,
+                message: "Not enough minrtt samples".to_string(),
             });
         }
+        let hdratio_num_samples: u32 = rec[&format!("r{}_num_samples_with_hdratio", i)].parse()?;
+
+        let mut hdratio_p50_ci_halfwidth: f32 = 0.0;
+        let mut hdratio: f32 = 0.0;
+        let mut hdratio_var: f32 = 0.0;
+        let mut hdratio_p50: f32 = 0.0;
+        let mut hdratio_boot: f32 = 0.0;
+        let mut r0_hdratio_boot_diff_ci_lb: f32 = 0.0;
+        let mut r0_hdratio_boot_diff_ci_ub: f32 = 0.0;
+        if hdratio_num_samples > RouteInfo::MIN_SAMPLES {
+            let hdratio_p50_ci_lb: f32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse().unwrap();
+            let hdratio_p50_ci_ub: f32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse().unwrap();
+            hdratio_p50_ci_halfwidth = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2.0;
+            hdratio = rec[&format!("r{}_hdratio_avg", i)].parse().unwrap();
+            hdratio_var = rec[&format!("r{}_hdratio_normal_var", i)].parse().unwrap();
+            hdratio_p50 = rec[&format!("r{}_hdratio_p50", i)].parse().unwrap();
+            hdratio_boot = rec[&format!("r{}_hdratio_avg_bootstrapped", i)].parse().unwrap();
+            if i > 0 {
+                r0_hdratio_boot_diff_ci_lb = rec
+                    [&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_lb", i)]
+                    .parse::<f32>()
+                    .unwrap_or_default();
+                r0_hdratio_boot_diff_ci_ub = rec
+                    [&format!("r{}_r0_diff_hdratio_avg_bootstrapped_ci_ub", i)]
+                    .parse::<f32>()
+                    .unwrap_or_default();
+                assert!(r0_hdratio_boot_diff_ci_ub >= r0_hdratio_boot_diff_ci_lb);
+            }
+        }
+
+        let minrtt_ms_p50_ci_lb: f32 = rec[&format!("r{}_minrtt_ms_p50_ci_lb", i)].parse().unwrap();
+        let minrtt_ms_p50_ci_ub: f32 = rec[&format!("r{}_minrtt_ms_p50_ci_ub", i)].parse().unwrap();
+        let minrtt_ms_p50_ci_halfwidth = ((minrtt_ms_p50_ci_ub - minrtt_ms_p50_ci_lb) / 2.0) as u16;
+
+        let bgp_as_path_len: u8 = rec[&format!("r{}_bgp_as_path_len", i)].parse().unwrap();
+        let bgp_as_path_wo_prepend: u8 =
+            rec[&format!("r{}_bgp_as_path_min_len_prepending_removed", i)].parse().unwrap();
 
         Ok(Box::new(RouteInfo {
-            apm_route_num: rec[&format!("r{}_apm_route_num", i)].parse()?,
+            apm_route_num,
             bgp_as_path_len,
             bgp_as_path_prepends: bgp_as_path_len - bgp_as_path_wo_prepend,
             peer_type: PeerType::new(
                 &rec[&format!("r{}_peer_type", i)],
                 &rec[&format!("r{}_peer_subtype", i)],
             )?,
-            minrtt_num_samples: rec[&format!("r{}_num_samples", i)].parse()?,
-            // minrtt_ms_p10: rec[&format!("r{}_minrtt_ms_p10", i)].parse()?,
-            minrtt_ms_p50: rec[&format!("r{}_minrtt_ms_p50", i)].parse()?,
+            minrtt_num_samples,
+            // minrtt_ms_p10: rec[&format!("r{}_minrtt_ms_p10", i)].parse().unwrap(),
+            minrtt_ms_p50: rec[&format!("r{}_minrtt_ms_p50", i)].parse::<f32>().unwrap() as u16,
             minrtt_ms_p50_ci_halfwidth,
-            // minrtt_ms_p50_var: rec[&format!("r{}_minrtt_ms_p50_var", i)].parse()?,
-            hdratio_num_samples: rec[&format!("r{}_hdratio_num_samples", i)].parse()?,
-            hdratio: rec[&format!("r{}_hdratio_avg", i)].parse()?,
-            hdratio_var: rec[&format!("r{}_hdratio_normal_var", i)].parse()?,
-            hdratio_p50: rec[&format!("r{}_hdratio_p50", i)].parse()?,
+            // minrtt_ms_p50_var: rec[&format!("r{}_minrtt_ms_p50_var", i)].parse().unwrap(),
+            hdratio_num_samples,
+            hdratio,
+            hdratio_var,
+            hdratio_p50,
             hdratio_p50_ci_halfwidth,
-            hdratio_boot: rec[&format!("r{}_hdratio_avg_bootstrapped", i)].parse()?,
+            hdratio_boot,
             r0_hdratio_boot_diff_ci_lb,
             r0_hdratio_boot_diff_ci_ub,
             px_nexthops: string_to_hash_u64(&rec[&format!("r{}_px_nexthops", i)]),
@@ -337,7 +413,7 @@ impl RouteInfo {
         (md, halfwidth)
     }
 
-    pub fn hdratio_diff_ci(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
+    pub fn hdratio_diff_ci_do_not_use(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
         let diff: f32 = rt1.hdratio - rt2.hdratio;
         let var1: f32 = rt1.hdratio_var;
         let var2: f32 = rt2.hdratio_var;
@@ -373,6 +449,14 @@ impl RouteInfo {
 
     pub fn compare_hdratio_bootstrap(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
         rt1.hdratio_boot.partial_cmp(&rt2.hdratio_boot).unwrap_or(Ordering::Equal)
+    }
+
+    pub fn minrtt_valid(rtinfo: &RouteInfo) -> bool {
+        rtinfo.minrtt_num_samples >= RouteInfo::MIN_SAMPLES
+    }
+
+    pub fn hdratio_valid(rtinfo: &RouteInfo) -> bool {
+        rtinfo.hdratio_num_samples >= RouteInfo::MIN_SAMPLES
     }
 }
 
@@ -494,56 +578,6 @@ pub(crate) mod tests {
             timebin
         }
 
-        pub(crate) fn mock_week_hdratio(
-            bin_duration_secs: u64,
-            pri_hdratio_even: f32,
-            alt_hdratio_even: f32,
-            hdratio_var_even: f32,
-            pri_hdratio_odd: f32,
-            alt_hdratio_odd: f32,
-            hdratio_var_odd: f32,
-        ) -> BTreeMap<u64, TimeBin> {
-            let mut time2bin: BTreeMap<u64, TimeBin> = BTreeMap::new();
-            for time in (0..7 * 86400).step_by(bin_duration_secs as usize) {
-                if time % (2 * bin_duration_secs) == 0 {
-                    let timebin = TimeBin::mock_hdratio(
-                        time,
-                        pri_hdratio_even,
-                        alt_hdratio_even,
-                        hdratio_var_even,
-                    );
-                    time2bin.insert(time, timebin);
-                } else {
-                    let timebin = TimeBin::mock_hdratio(
-                        time,
-                        pri_hdratio_odd,
-                        alt_hdratio_odd,
-                        hdratio_var_odd,
-                    );
-                    time2bin.insert(time, timebin);
-                }
-            }
-            time2bin
-        }
-
-        pub(crate) fn mock_hdratio(
-            time: u64,
-            pri_hdratio: f32,
-            alt_hdratio: f32,
-            hdratio_var: f32,
-        ) -> TimeBin {
-            let mut timebin = TimeBin {
-                time_bucket: time,
-                bytes_acked_sum: TimeBin::MOCK_TOTAL_BYTES,
-                num2route: [None, None, None, None, None, None, None],
-            };
-            let primary = RouteInfo::mock_hdratio(1, pri_hdratio, hdratio_var);
-            let alternate = RouteInfo::mock_hdratio(2, alt_hdratio, hdratio_var);
-            timebin.num2route[0] = Some(Box::new(primary));
-            timebin.num2route[1] = Some(Box::new(alternate));
-            timebin
-        }
-
         pub(crate) fn mock_week_hdratio_p50(
             bin_duration_secs: u64,
             pri_hdratio50_even: f32,
@@ -639,27 +673,6 @@ pub(crate) mod tests {
                 hdratio_num_samples: 200,
                 hdratio: 0.9,
                 hdratio_var: 0.01,
-                hdratio_p50: 1.0,
-                hdratio_p50_ci_halfwidth: 0.01,
-                hdratio_boot: 0.9,
-                r0_hdratio_boot_diff_ci_lb: 0.85,
-                r0_hdratio_boot_diff_ci_ub: 0.95,
-                px_nexthops: 1,
-            }
-        }
-
-        pub(crate) fn mock_hdratio(apm_route_num: u8, hdratio: f32, hdratio_var: f32) -> RouteInfo {
-            RouteInfo {
-                apm_route_num,
-                bgp_as_path_len: 3,
-                bgp_as_path_prepends: 1,
-                peer_type: PeerType::Transit,
-                minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
-                minrtt_ms_p50: 20,
-                minrtt_ms_p50_ci_halfwidth: 1,
-                hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
-                hdratio,
-                hdratio_var,
                 hdratio_p50: 1.0,
                 hdratio_p50_ci_halfwidth: 0.01,
                 hdratio_boot: 0.9,
@@ -772,10 +785,12 @@ pub(crate) mod tests {
         let minrtt_ci_halfwidth: u16 = 100;
         let mut timebin: TimeBin =
             TimeBin::mock_minrtt_p50(0, pri_minrtt, alt1_minrtt, minrtt_ci_halfwidth);
-        let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
+        let rtinfo =
+            timebin.get_best_alternate_minrtt(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt1_minrtt);
         timebin.num2route[2] = Some(Box::new(RouteInfo::mock_minrtt_p50(3, 60, 100)));
-        let rtinfo = timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
+        let rtinfo =
+            timebin.get_best_alternate_minrtt(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         assert!(rtinfo.minrtt_ms_p50 == alt2_minrtt);
 
         let pri_hdratio_boot: f32 = 0.9;
@@ -792,8 +807,10 @@ pub(crate) mod tests {
             alt1_hdratio_boot_diff_ci_lb,
             alt1_hdratio_boot_diff_ci_ub,
         );
-        let rtinfo =
-            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let rtinfo = timebin
+            .get_best_alternate_hdratio(RouteInfo::compare_hdratio_bootstrap)
+            .as_ref()
+            .unwrap();
         assert!((rtinfo.hdratio_boot - alt1_hdratio_boot).abs() < 1e-6);
         timebin.num2route[2] = Some(Box::new(RouteInfo::mock_hdratio_boot(
             3,
@@ -801,8 +818,10 @@ pub(crate) mod tests {
             alt2_hdratio_boot_diff_ci_lb,
             alt2_hdratio_boot_diff_ci_ub,
         )));
-        let rtinfo =
-            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let rtinfo = timebin
+            .get_best_alternate_hdratio(RouteInfo::compare_hdratio_bootstrap)
+            .as_ref()
+            .unwrap();
         assert!((rtinfo.hdratio_boot - alt2_hdratio_boot).abs() < 1e-6);
     }
 
@@ -813,9 +832,9 @@ pub(crate) mod tests {
         let minrtt_ci_halfwidth: u16 = 2;
         let timebin: TimeBin =
             TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_ci_halfwidth);
-        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
+        let pribox: &RouteInfo = timebin.get_primary_route_minrtt().as_ref().unwrap();
         let altbox: &RouteInfo =
-            timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
+            timebin.get_best_alternate_minrtt(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(pribox, altbox);
         assert!((diff - (f32::from(pri_minrtt) - f32::from(alt_minrtt))).abs() < 1e-6);
         let var: f32 = (f32::from(minrtt_ci_halfwidth) / 2.0).powf(2.0);
@@ -830,9 +849,9 @@ pub(crate) mod tests {
         let minrtt_ci_halfwidth: u16 = 100;
         let timebin: TimeBin =
             TimeBin::mock_minrtt_p50(0, pri_minrtt, alt_minrtt, minrtt_ci_halfwidth);
-        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
+        let pribox: &RouteInfo = timebin.get_primary_route_minrtt().as_ref().unwrap();
         let altbox: &RouteInfo =
-            timebin.get_best_alternate(RouteInfo::compare_median_minrtt).as_ref().unwrap();
+            timebin.get_best_alternate_minrtt(RouteInfo::compare_median_minrtt).as_ref().unwrap();
         let (diff, halfwidth) = RouteInfo::minrtt_median_diff_ci(pribox, altbox);
         assert!((diff - (f32::from(pri_minrtt) - f32::from(alt_minrtt))).abs() < 1e-6);
         let var: f32 = (f32::from(minrtt_ci_halfwidth) / 2.0).powf(2.0);
@@ -853,9 +872,11 @@ pub(crate) mod tests {
             hdratio_boot_diff_ci_lb,
             hdratio_boot_diff_ci_ub,
         );
-        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
-        let altbox: &RouteInfo =
-            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let pribox: &RouteInfo = timebin.get_primary_route_hdratio().as_ref().unwrap();
+        let altbox: &RouteInfo = timebin
+            .get_best_alternate_hdratio(RouteInfo::compare_hdratio_bootstrap)
+            .as_ref()
+            .unwrap();
         let (lb, diff, ub) = RouteInfo::hdratio_boot_diff_ci(altbox, pribox);
         assert!((diff - (alt_hdratio_boot - pri_hdratio_boot)).abs() < 1e-6);
         assert!(lb <= ub);
@@ -873,9 +894,11 @@ pub(crate) mod tests {
             hdratio_boot_diff_ci_lb,
             hdratio_boot_diff_ci_ub,
         );
-        let pribox: &RouteInfo = timebin.get_primary_route().as_ref().unwrap();
-        let altbox: &RouteInfo =
-            timebin.get_best_alternate(RouteInfo::compare_hdratio_bootstrap).as_ref().unwrap();
+        let pribox: &RouteInfo = timebin.get_primary_route_hdratio().as_ref().unwrap();
+        let altbox: &RouteInfo = timebin
+            .get_best_alternate_hdratio(RouteInfo::compare_hdratio_bootstrap)
+            .as_ref()
+            .unwrap();
         let (lb, diff, ub) = RouteInfo::hdratio_boot_diff_ci(altbox, pribox);
         assert!((diff - (alt_hdratio_boot - pri_hdratio_boot)).abs() < 1e-6);
         assert!(lb <= ub);

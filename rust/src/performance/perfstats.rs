@@ -13,6 +13,13 @@ use serde_pickle;
 use crate::cdf;
 use crate::performance::db;
 
+#[derive(Debug, PartialEq)]
+pub enum TimeBinSummary {
+    NoRoute,
+    WideConfidenceInterval,
+    Valid(TimeBinStats),
+}
+
 pub trait TimeBinSummarizer {
     fn summarize(&self, pathid: &db::PathId, bin: &db::TimeBin) -> TimeBinSummary;
     fn get_routes<'s: 'd, 'd>(
@@ -22,6 +29,23 @@ pub trait TimeBinSummarizer {
         db: &'d db::DB,
     ) -> (&'d db::RouteInfo, &'d db::RouteInfo);
     fn prefix(&self) -> String;
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct TimeBinStats {
+    pub bytes: u64,
+    pub diff_ci: f32,
+    pub diff_ci_halfwidth: f32,
+    pub primary_peer_type: db::PeerType,
+    pub alternate_peer_type: db::PeerType,
+    pub bitmask: u8,
+    pub is_shifted: bool,
+}
+
+impl TimeBinStats {
+    pub const ALTERNATE_IS_LONGER: u8 = 1;
+    pub const ALTERNATE_IS_PREPENDED_MORE: u8 = (1 << 1);
+    pub const BEST_ALTERNATE_IS_BGP_PREFERRED: u8 = (1 << 2);
 }
 
 /// Classes of temporal behavior over time.
@@ -121,30 +145,6 @@ pub struct PathSummary {
     // valid_bins = time2binstats.len()
     pub wideci_bins: u16,
     pub temporal_behavior: TemporalBehavior,
-}
-
-#[derive(Debug, Default, PartialEq)]
-pub struct TimeBinStats {
-    pub bytes: u64,
-    pub diff_ci: f32,
-    pub diff_ci_halfwidth: f32,
-    pub primary_peer_type: db::PeerType,
-    pub alternate_peer_type: db::PeerType,
-    pub bitmask: u8,
-    pub is_shifted: bool,
-}
-
-impl TimeBinStats {
-    pub const ALTERNATE_IS_LONGER: u8 = 1;
-    pub const ALTERNATE_IS_PREPENDED_MORE: u8 = (1 << 1);
-    pub const BEST_ALTERNATE_IS_BGP_PREFERRED: u8 = (1 << 2);
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TimeBinSummary {
-    NoRoute,
-    WideConfidenceInterval,
-    Valid(TimeBinStats),
 }
 
 impl TemporalConfig {

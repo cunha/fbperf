@@ -16,8 +16,10 @@ def generate_route(
     hdratio_boot,
 ):
     num_samples = 100
+    as_path_strings = '["1916"]'
     as_path_len = 2 + apm_route_num
     as_path_len_wo_prep = 2
+    as_path_prepending = "true"
     px_nexthops = '["130.130.130.1"]'
     return (
         num_samples,
@@ -26,7 +28,9 @@ def generate_route(
         "peering",
         "private",
         as_path_len,
+        as_path_strings,
         as_path_len_wo_prep,
+        as_path_prepending,
         px_nexthops,
         0.0,  # minrtt_ms_p25
         0.0,
@@ -133,6 +137,12 @@ SPECS = {
     "full-opp--no-deg.csv": (
         R0, BETTER_R1, BETTER_R1_BOOT_DIFF, R0, BETTER_R1, BETTER_R1_BOOT_DIFF
     ),
+    "half-opp--half-deg.csv": (
+        R0, BETTER_R1, BETTER_R1_BOOT_DIFF, WORSE_R1, WORSE_R1, R0_BOOT_DIFF
+    ),
+    "no-opp--half-deg.csv": (
+        R0, R0, R0_BOOT_DIFF, WORSE_R1, WORSE_R1, R0_BOOT_DIFF
+    )
 }
 
 

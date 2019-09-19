@@ -28,8 +28,8 @@ struct Opt {
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
-    let max_minrtt50_diff_ci_halfwidth: f32 = 20.0;
-    let max_minrtt50_ci_halfwidth: u16 = 20;
+    let max_minrtt50_diff_ci_halfwidth: f32 = 25.0;
+    let max_minrtt50_ci_halfwidth: u16 = 25;
     let max_hdratio50_diff_ci_halfwidth: f32 = 0.20;
     let max_hdratio50_ci_halfwidth: f32 = 0.20;
     let max_hdratio_boot_diff_ci_fullwidth: f32 = 0.20;
