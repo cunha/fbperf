@@ -1,12 +1,12 @@
 use std::borrow::Borrow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap, HashMap};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
@@ -141,8 +141,8 @@ impl DB {
             if (db.rows % 10000) == 0 {
                 info!("{} rows", db.rows);
             }
-            let pid: Rc<PathId> = match PathId::from_record(&record) {
-                Ok(p) => Rc::new(p),
+            let pid: Arc<PathId> = match PathId::from_record(&record) {
+                Ok(p) => Arc::new(p),
                 Err(e) => {
                     *db.error_counts.entry(e.kind).or_insert(0) += 1;
                     continue;
@@ -157,7 +157,7 @@ impl DB {
             };
             min_timestamp = std::cmp::min(min_timestamp, timebin.time_bucket);
             max_timestamp = std::cmp::max(max_timestamp, timebin.time_bucket);
-            let mut pinfo = db.pathid2info.entry(Rc::clone(&pid)).or_insert_with(Default::default);
+            let mut pinfo = db.pathid2info.entry(Arc::clone(&pid)).or_insert_with(Default::default);
             pinfo.total_traffic += u128::from(timebin.bytes_acked_sum);
             db.total_traffic += u128::from(timebin.bytes_acked_sum);
             match pinfo.time2bin.entry(timebin.time_bucket) {
