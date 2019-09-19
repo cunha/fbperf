@@ -20,7 +20,7 @@ pub enum TimeBinSummary {
     Valid(TimeBinStats),
 }
 
-pub trait TimeBinSummarizer {
+pub trait TimeBinSummarizer: Send + Sync {
     fn summarize(&self, pathid: &db::PathId, bin: &db::TimeBin) -> TimeBinSummary;
     fn get_routes<'s: 'd, 'd>(
         &'s self,

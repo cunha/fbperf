@@ -1,8 +1,11 @@
 use std::borrow::Borrow;
 use std::error::Error;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use log::info;
+use crossbeam::sync::WaitGroup;
+use log::{error, info};
+use rayon;
 use structopt::StructOpt;
 
 use fbperf::performance::db;
@@ -10,7 +13,7 @@ use fbperf::performance::perfstats;
 use fbperf::performance::perfstats::TimeBinSummarizer;
 use fbperf::performance::summarizers;
 
-#[derive(Debug, StructOpt)]
+#[derive(Clone, Debug, StructOpt)]
 #[structopt(
     name = "perfagg",
     about = "Compute performance stats on FB CSV exports.",
@@ -25,17 +28,19 @@ struct Opt {
     outdir: PathBuf,
     #[structopt(long, default_value = "900")]
     bin_duration_secs: u32,
+    #[structopt(long, default_value = "4")]
+    threads: usize,
 }
 
-fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
+fn build_summarizers(db: &db::DB) -> Vec<Arc<dyn TimeBinSummarizer>> {
     let max_minrtt50_ci_halfwidth: u16 = 25;
     let max_hdratio50_ci_halfwidth: f32 = 0.20;
     let max_hdratio_boot_diff_ci_fullwidth: f32 = 0.20;
-    let mut summarizers: Vec<Box<dyn TimeBinSummarizer>> = Vec::new();
+    let mut summarizers: Vec<Arc<dyn TimeBinSummarizer>> = Vec::new();
 
     for &max_minrtt50_diff_ci_halfwidth in [10.0f32, 20.0f32].iter() {
         for &min_minrtt50_diff in [5, 10, 20].iter() {
-            let ml = Box::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
+            let ml = Arc::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
                 minrtt50_min_improv: min_minrtt50_diff,
                 max_minrtt50_diff_ci_halfwidth,
                 compare_lower_bound: true,
@@ -44,7 +49,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
         }
         for &min_minrtt50_diff in [5, 10, 20, 50].iter() {
             let ml =
-                Box::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
+                Arc::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
                     0.1,
                     min_minrtt50_diff,
                     max_minrtt50_diff_ci_halfwidth,
@@ -56,7 +61,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
     }
     for &min_hdratio_diff in [0.05, 0.1, 0.2].iter() {
         for &max_hdratio50_diff_ci_halfwidth in [0.1f32, 0.2f32].iter() {
-            let hl = Box::new(summarizers::opportunity::HdRatio50ImprovementSummarizer {
+            let hl = Arc::new(summarizers::opportunity::HdRatio50ImprovementSummarizer {
                 hdratio50_min_improv: min_hdratio_diff,
                 max_hdratio50_diff_ci_halfwidth,
                 compare_lower_bound: true,
@@ -64,7 +69,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
             summarizers.push(hl);
         }
         let hl =
-            Box::new(summarizers::opportunity::HdRatioBootstrapDifferenceImprovementSummarizer {
+            Arc::new(summarizers::opportunity::HdRatioBootstrapDifferenceImprovementSummarizer {
                 hdratio_boot_min_improv: min_hdratio_diff,
                 max_hdratio_boot_diff_ci_fullwidth,
                 compare_lower_bound: true,
@@ -74,7 +79,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Box<dyn TimeBinSummarizer>> {
     for &min_hdratio_diff in [0.05, 0.1, 0.2, 0.5, 0.75].iter() {
         for &max_hdratio50_diff_ci_halfwidth in [0.1f32, 0.2f32].iter() {
             let hl =
-                Box::new(summarizers::degradation::HdRatio50LowerBoundDegradationSummarizer::new(
+                Arc::new(summarizers::degradation::HdRatio50LowerBoundDegradationSummarizer::new(
                     0.9,
                     min_hdratio_diff,
                     max_hdratio50_diff_ci_halfwidth,
@@ -118,28 +123,56 @@ fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let opts = Opt::from_args();
 
-    let db = db::DB::from_file(&opts.input, opts.bin_duration_secs)?;
-    info!("loaded DB with {} rows", db.rows);
-    info!("db has {} paths, {} total traffic", db.pathid2info.len(), db.total_traffic);
+    let db_arc = Arc::new(db::DB::from_file(&opts.input, opts.bin_duration_secs)?);
+    info!("loaded DB with {} rows", db_arc.rows);
+    info!("db has {} paths, {} total traffic", db_arc.pathid2info.len(), db_arc.total_traffic);
 
     let tempconfigs: Vec<perfstats::TemporalConfig> = build_temporal_configs();
-    let summarizers: Vec<Box<dyn perfstats::TimeBinSummarizer>> = build_summarizers(&db);
+    let summarizers: Vec<Arc<dyn perfstats::TimeBinSummarizer>> = build_summarizers(&db_arc);
 
-    for summarizer in summarizers.iter() {
-        let mut dbsum: perfstats::DBSummary =
-            perfstats::DBSummary::build(&db, summarizer.borrow(), &tempconfigs[0]);
-        for (i, tempcfg) in tempconfigs.iter().enumerate() {
-            let mut dir: PathBuf = opts.outdir.clone();
-            dir.push(tempcfg.prefix());
-            dir.push(summarizer.prefix());
-            info!("processing {}", dir.to_str().unwrap());
-            if i > 0 {
-                dbsum.reclassify(&db, tempcfg);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
+    let wg = WaitGroup::new();
+
+    for summarizer_arc in summarizers.iter() {
+        let db = Arc::clone(&db_arc);
+        let summarizer = Arc::clone(&summarizer_arc);
+        let wg = wg.clone();
+        let opts = opts.clone();
+        let tempconfigs = tempconfigs.clone();
+        pool.spawn(move || {
+            let mut dbsum: perfstats::DBSummary =
+                perfstats::DBSummary::build(&db, summarizer.borrow(), &tempconfigs[0]);
+            for (i, tempcfg) in tempconfigs.iter().enumerate() {
+                let mut dir: PathBuf = opts.outdir.clone();
+                dir.push(tempcfg.prefix());
+                dir.push(summarizer.prefix());
+                info!("processing {}", dir.to_str().unwrap());
+                if i > 0 {
+                    dbsum.reclassify(&db, tempcfg);
+                }
+                dbsum.dump(&dir, &db, &*summarizer).unwrap_or_else(|e| {
+                    error!("{}: could not dump DBSummary", summarizer.prefix());
+                    error!("{:?}", e);
+                });
+                tempcfg.dump(&dir).unwrap_or_else(|e| {
+                    error!("{}: could not dump TemporalConfig", summarizer.prefix());
+                    error!("{:?}", e);
+                });
+                summarizers::opportunity::dump_opportunity_vs_relationship(&dbsum, &dir)
+                    .unwrap_or_else(|e| {
+                        error!(
+                            "{}: could not dump opportunity_vs_relationship",
+                            summarizer.prefix()
+                        );
+                        error!("{:?}", e);
+                    });
             }
-            dbsum.dump(&dir, &db, summarizer.borrow())?;
-            tempcfg.dump(&dir)?;
-            summarizers::opportunity::dump_opportunity_vs_relationship(&dbsum, &dir)?;
-        }
+            drop(db);
+            drop(summarizer);
+            drop(wg);
+        });
     }
+
+    wg.wait();
     Ok(())
 }
