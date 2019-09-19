@@ -134,6 +134,125 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDistinctPathsDegradationSummarizer 
     }
 }
 
+
+/// Summarize HD-ratio degradation over time comparing primary routes.
+///
+/// This struct requires initialization using through a call to `new`,
+/// which will find the "best" `TimeBin` for each `PathId` in the
+/// dataset. Thresholds below control filters applied to the algorithm
+/// to find the best `TimeBin`.
+pub struct HdRatioLowerBoundDegradationSummarizer {
+    /// The minimum difference between the best `TimeBin` and other
+    /// `TimeBin`s considered degradation.
+    min_diff_degradation: f32,
+    /// The maximum CI halfwidth of the performance difference between
+    /// the best `TimeBin` and other `TimeBin`s. `TimeBin` comparisons
+    /// whose CI halfwidth is above this threshold will not be
+    /// considered valid. (This parameter is used after initialization,
+    /// when computing degradation.)
+    max_diff_ci_halfwidth: f32,
+    /// During initialization, `TimeBin`s whose primary route's HD-ratio
+    /// variance is above this threshold will not be considered for
+    /// "best". (These `TimeBin`s will still be considered in
+    /// comparisons later; if their primary routes have better
+    /// performance than that of the `TimeBin` chosen for best, we say
+    /// there is no degradation.) This parameter allows ignoring primary
+    /// routes with large HD-ratio variance, which could lead to later
+    /// comparisons having large CI halfwidths (and filtering due to the
+    /// CI halfwidth threshold).
+    max_hdratio_var: f32,
+    /// This stores the primary `RouteInfo` for the best `TimeBin` for
+    /// each `PathId`, chosen based on the thresholds above. `PathId`s
+    /// without a valid best `TimeBin` are not included in the mapping.
+    pathid2baseroute: HashMap<Rc<PathId>, Box<RouteInfo>>,
+}
+
+impl HdRatioLowerBoundDegradationSummarizer {
+    pub fn new(
+        baseline_percentile: f32,
+        min_diff_degradation: f32,
+        max_diff_ci_halfwidth: f32,
+        max_hdratio_var: f32,
+        db: &DB,
+    ) -> Self {
+        let mut sum = Self {
+            min_diff_degradation,
+            max_diff_ci_halfwidth,
+            max_hdratio_var,
+            pathid2baseroute: HashMap::new(),
+        };
+        for (pathid, pinfo) in &db.pathid2info {
+            let mut valid: Vec<RouteInfo> = Vec::default();
+            for timebin in pinfo.time2bin.values() {
+                match timebin.get_primary_route_hdratio() {
+                    None => continue,
+                    Some(primary) => {
+                        if primary.hdratio_var >= max_hdratio_var {
+                            continue;
+                        }
+                        valid.push(**primary);
+                    }
+                }
+            }
+            if valid.is_empty() {
+                continue;
+            }
+            valid.sort_by(RouteInfo::compare_hdratio);
+            let i: usize = ((valid.len() - 1) as f32 * baseline_percentile).round() as usize;
+            sum.pathid2baseroute.insert(Rc::clone(&pathid), Box::new(valid[i]));
+        }
+        info!(
+            "HdRatioLowerBoundDegradationSummarizer paths in={} out={}",
+            db.pathid2info.len(),
+            sum.pathid2baseroute.len()
+        );
+        sum
+    }
+}
+
+impl TimeBinSummarizer for HdRatioLowerBoundDegradationSummarizer {
+    fn summarize(&self, pathid: &PathId, bin: &TimeBin) -> TimeBinSummary {
+        match (self.pathid2baseroute.get(pathid), bin.get_primary_route_hdratio()) {
+            (None, _) => TimeBinSummary::WideConfidenceInterval,
+            (_, None) => TimeBinSummary::NoRoute,
+            (Some(bestroute), Some(primary)) => {
+                let (diff, halfwidth) = RouteInfo::hdratio_diff_ci(bestroute, primary);
+                if halfwidth > self.max_diff_ci_halfwidth {
+                    TimeBinSummary::WideConfidenceInterval
+                } else {
+                    TimeBinSummary::Valid(TimeBinStats {
+                        bytes: bin.bytes_acked_sum,
+                        diff_ci: diff,
+                        diff_ci_halfwidth: halfwidth,
+                        primary_peer_type: primary.peer_type,
+                        alternate_peer_type: bestroute.peer_type,
+                        bitmask: 0,
+                        is_shifted: diff - halfwidth > self.min_diff_degradation,
+                    })
+                }
+            }
+        }
+    }
+    fn get_routes<'s: 'd, 'd>(
+        &'s self,
+        pathid: &PathId,
+        time: u64,
+        db: &'d DB,
+    ) -> (&'d RouteInfo, &'d RouteInfo) {
+        (
+            &self.pathid2baseroute[pathid],
+            &db.pathid2info[pathid].time2bin[&time].get_primary_route_hdratio().as_ref().unwrap(),
+        )
+    }
+    fn prefix(&self) -> String {
+        format!(
+            "hdratio--deg--bound-true--halfwidth-{:0.2}--max-var-{:0.2}--min-deg-{:0.2}",
+            self.max_diff_ci_halfwidth, self.max_hdratio_var, self.min_diff_degradation
+        )
+    }
+}
+
+
     #[test]
     fn test_minrtt_degradation_distinct_new_minrtt_var() {
         let pid1 = db::tests::make_path_id();
@@ -260,3 +379,4 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDistinctPathsDegradationSummarizer 
         let binsum = sum.summarize(&pid1, &timebin);
         assert!(binsum == TimeBinSummary::WideConfidenceInterval);
     }
+

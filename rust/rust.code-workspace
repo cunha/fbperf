@@ -1,10 +1,17 @@
 {
+	"settings": {
+		"files.watcherExclude": {
+			"test/**": true,
+			"target/**": true,
+			"test*/**": true,
+			"*opp*deg/**": true,
+		},
+	},
 	"folders": [
 		{
 			"path": "."
 		}
 	],
-	"settings": {},
 	"launch": {
 		"version": "0.2.0",
 		"configurations": [
