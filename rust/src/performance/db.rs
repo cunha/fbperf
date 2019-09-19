@@ -8,10 +8,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crossbeam::sync::WaitGroup;
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
 use log::info;
 use num_enum::TryFromPrimitive;
+use rayon;
 use serde::Serialize;
 
 mod error;
@@ -126,48 +128,83 @@ impl DB {
         let filerdr = BufReader::new(f);
         let gzrdr = GzDecoder::new(filerdr);
         let mut csvrdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(gzrdr);
-        let mut db = DB {
+
+        let dbarc = Arc::new(Mutex::new(DB {
             pathid2info: HashMap::new(),
             total_bins: 0,
             total_traffic: 0,
             rows: 0,
             error_counts: HashMap::new(),
-        };
-        let mut min_timestamp: u64 = std::u64::MAX;
-        let mut max_timestamp: u64 = 0;
+        }));
+        let tsarc = Arc::new(Mutex::new((std::u64::MAX, 0u64)));
+        // let mut min_timestamp: u64 = std::u64::MAX;
+        // let mut max_timestamp: u64 = 0;
+
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+        let wg = WaitGroup::new();
+
         for result in csvrdr.deserialize() {
-            db.rows += 1;
-            let record: HashMap<String, String> = result.unwrap();
-            if (db.rows % 10000) == 0 {
-                info!("{} rows", db.rows);
-            }
-            let pid: Arc<PathId> = match PathId::from_record(&record) {
-                Ok(p) => Arc::new(p),
-                Err(e) => {
-                    *db.error_counts.entry(e.kind).or_insert(0) += 1;
-                    continue;
+            let thread_db_arc = Arc::clone(&dbarc);
+            let thread_ts_arc = Arc::clone(&tsarc);
+            let thread_wg = wg.clone();
+            pool.spawn(move || {
+                let record: HashMap<String, String> = result.unwrap();
+                let pid: Arc<PathId> = match PathId::from_record(&record) {
+                    Ok(p) => Arc::new(p),
+                    Err(e) => {
+                        let mut db = thread_db_arc.lock().unwrap();
+                        db.rows += 1;
+                        *db.error_counts.entry(e.kind).or_insert(0) += 1;
+                        return;
+                    }
+                };
+                let timebin = match TimeBin::from_record(&record) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let mut db = thread_db_arc.lock().unwrap();
+                        db.rows += 1;
+                        *db.error_counts.entry(e.kind).or_insert(0) += 1;
+                        return;
+                    }
+                };
+                {
+                    let mut timestamps = thread_ts_arc.lock().unwrap();
+                    timestamps.0 = std::cmp::min(timestamps.0, timebin.time_bucket);
+                    timestamps.1 = std::cmp::min(timestamps.1, timebin.time_bucket);
                 }
-            };
-            let timebin = match TimeBin::from_record(&record) {
-                Ok(t) => t,
-                Err(e) => {
-                    *db.error_counts.entry(e.kind).or_insert(0) += 1;
-                    continue;
+                let rows: u32;
+                let bytes: u128 = u128::from(timebin.bytes_acked_sum);
+                {
+                    let mut db = thread_db_arc.lock().unwrap();
+                    db.rows += 1;
+                    db.total_traffic += bytes;
+                    let mut pinfo =
+                        db.pathid2info.entry(Arc::clone(&pid)).or_insert_with(Default::default);
+                    pinfo.total_traffic += bytes;
+                    if pinfo.time2bin.insert(timebin.time_bucket, timebin).is_some() {
+                        *db.error_counts.entry(ParseErrorKind::RepeatedTimebin).or_insert(0) += 1;
+                    }
+                    rows = db.rows;
                 }
-            };
-            min_timestamp = std::cmp::min(min_timestamp, timebin.time_bucket);
-            max_timestamp = std::cmp::max(max_timestamp, timebin.time_bucket);
-            let mut pinfo = db.pathid2info.entry(Arc::clone(&pid)).or_insert_with(Default::default);
-            pinfo.total_traffic += u128::from(timebin.bytes_acked_sum);
-            db.total_traffic += u128::from(timebin.bytes_acked_sum);
-            match pinfo.time2bin.entry(timebin.time_bucket) {
-                btree_map::Entry::Vacant(e) => e.insert(timebin),
-                btree_map::Entry::Occupied(_) => {
-                    *db.error_counts.entry(ParseErrorKind::RepeatedTimebin).or_insert(0) += 1;
-                    continue;
+                if (rows % 10000) == 0 {
+                    info!("{} rows", rows);
                 }
-            };
+                drop(thread_db_arc);
+                drop(thread_ts_arc);
+                drop(thread_wg);
+            });
         }
+
+        drop(pool);
+        wg.wait();
+
+        let mut db: DB = match Arc::try_unwrap(dbarc) {
+            Ok(mutex) => mutex.into_inner().unwrap(),
+            Err(_) => {
+                unreachable!();
+            }
+        };
+        let (min_timestamp, max_timestamp) = Arc::try_unwrap(tsarc).unwrap().into_inner().unwrap();
         let seconds: u32 = (max_timestamp - min_timestamp) as u32;
         db.total_bins = seconds / bin_duration_secs;
         info!(
