@@ -10,7 +10,8 @@ import sys
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 # import matplotlib.ticker as ticker
-
+import matplotlib
+matplotlib.rcParams['text.usetex'] = True
 
 def read_ts(fpath, tstamp_idx, value_idx):
     ts = dict()
@@ -40,9 +41,9 @@ def plot_minrtt(ts_all, ts_ca, ts_hi, outfn):
     fmt = mdates.DateFormatter('%Y-%m-%d\n%H:%M')
     fmt = mdates.DateFormatter('%Y-%m-%d')
 
-    fig, ax1 = plt.subplots(figsize=(8,4))
+    fig, ax1 = plt.subplots(figsize=(8,3))
     # fig.autofmt_xdate()
-    ax1.tick_params(axis="both", which="major", labelsize=12)
+    ax1.tick_params(axis="both", which="major", labelsize=14)
     ax1.xaxis_date()
     ax1.xaxis.set_major_formatter(fmt)
     ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
@@ -55,7 +56,7 @@ def plot_minrtt(ts_all, ts_ca, ts_hi, outfn):
     ax1.set_xlim(xlim0, xlim1)
 
     ax1.set_ylabel("Median Minimum RTT [ms]", fontsize=16)
-    ax1.set_ylim(10, 80)
+    ax1.set_ylim(0, 80)
     fig.tight_layout()
 
     times, samples = zip(*ts_hi)
@@ -67,7 +68,7 @@ def plot_minrtt(ts_all, ts_ca, ts_hi, outfn):
     times, samples = zip(*ts_ca)
     ax1.plot(times, samples, next(linecycler), label="California clients")
 
-    plt.legend(loc="upper right", fontsize=14)
+    plt.legend(ncol=3, loc="upper right", fontsize=14)
     plt.grid()
     plt.savefig(outfn, bbox_inches="tight")
     plt.close(fig)

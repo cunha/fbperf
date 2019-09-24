@@ -7,7 +7,8 @@ import os
 import sys
 
 import matplotlib.pyplot as plt
-
+import matplotlib
+matplotlib.rcParams['text.usetex'] = True
 
 def read_cdf(fpath):
     cdf = list()
@@ -27,15 +28,15 @@ def plot_cdfs(label2cdf, outfn, **kwargs):
     plt.style.use('seaborn-colorblind')
 
     fig, ax1 = plt.subplots()
-    ax1.tick_params(axis="both", which="major", labelsize=14)
+    ax1.tick_params(axis="both", which="major", labelsize=16)
     if "xlabel" in kwargs:
-        ax1.set_xlabel(kwargs["xlabel"], fontsize=16)
+        ax1.set_xlabel(kwargs["xlabel"], fontsize=20)
     else:
-        ax1.set_xlabel("Metric", fontsize=16)
+        ax1.set_xlabel("Metric", fontsize=20)
     if "ylabel" in kwargs:
-        ax1.set_ylabel(kwargs["ylabel"], fontsize=16)
+        ax1.set_ylabel(kwargs["ylabel"], fontsize=20)
     else:
-        ax1.set_ylabel("CDF", fontsize=16)
+        ax1.set_ylabel("CDF", fontsize=20)
     if "xlim" in kwargs:
         ax1.set_xlim(kwargs["xlim"][0], kwargs["xlim"][1])
     else:
@@ -47,7 +48,7 @@ def plot_cdfs(label2cdf, outfn, **kwargs):
         if "xdiv" in kwargs:
             xs = list(x/kwargs["xdiv"] for x in xs)
         ax1.plot(xs, ys, next(linecycler), label=label)
-    plt.legend(loc="best", fontsize=14)
+    plt.legend(loc="best", fontsize=16)
     plt.grid()
     plt.savefig(outfn, bbox_inches="tight")
     plt.close(fig)
@@ -69,8 +70,8 @@ def main():
         fn = os.path.join('conn-dur-busy', "%s-%s.cdf" % (metric, proto))
         label2cdf[PROTO2XLABEL[proto]] = read_cdf(fn)
     outfn = "conn-dur-busy/dur.pdf"
-    plot_cdfs(label2cdf, outfn, xlabel="Connection Duration [s]",
-            ylabel="Cumulative Fraction of Connections",
+    plot_cdfs(label2cdf, outfn, xlabel="Session Duration [s]",
+            ylabel="Cumulative Fraction of Sessions",
             xlim=(0, 300),
             xdiv=1000)
 
@@ -80,8 +81,8 @@ def main():
         fn = os.path.join('conn-dur-busy', "%s-%s.cdf" % (metric, proto))
         label2cdf[PROTO2XLABEL[proto]] = read_cdf(fn)
     outfn = "conn-dur-busy/busy.pdf"
-    plot_cdfs(label2cdf, outfn, xlabel="Percentage of Connection Time Sending Traffic",
-            ylabel="Cumulative Fraction of Connections",
+    plot_cdfs(label2cdf, outfn, xlabel="Percentage of Session Time Sending Traffic",
+            ylabel="Cumulative Fraction of Sessions",
             xlim=(0, 100))
 
 if __name__ == "__main__":

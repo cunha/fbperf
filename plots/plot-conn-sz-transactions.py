@@ -7,7 +7,8 @@ import os
 import sys
 
 import matplotlib.pyplot as plt
-
+import matplotlib
+matplotlib.rcParams['text.usetex'] = True
 
 def read_cdf(fpath):
     cdf = list()
@@ -24,18 +25,19 @@ def plot_cdfs(label2cdf, outfn, **kwargs):
 
     lines = ["-", "--", "-.", ":"]
     linecycler = cycle(lines)
-    plt.style.use('seaborn-colorblind')
+    # plt.style.use('seaborn-colorblind')
 
-    fig, ax1 = plt.subplots(figsize=(8,4))
+    fig, ax1 = plt.subplots(figsize=(8,3))
     ax1.tick_params(axis="both", which="major", labelsize=14)
+    ax1.set_xscale("log")
     if "xlabel" in kwargs:
-        ax1.set_xlabel(kwargs["xlabel"], fontsize=16)
+        ax1.set_xlabel(kwargs["xlabel"], fontsize=18)
     else:
-        ax1.set_xlabel("Metric", fontsize=16)
+        ax1.set_xlabel("Metric", fontsize=18)
     if "ylabel" in kwargs:
-        ax1.set_ylabel(kwargs["ylabel"], fontsize=16)
+        ax1.set_ylabel(kwargs["ylabel"], fontsize=18)
     else:
-        ax1.set_ylabel("CDF", fontsize=16)
+        ax1.set_ylabel("CDF", fontsize=18)
     if "xlim" in kwargs:
         ax1.set_xlim(kwargs["xlim"][0], kwargs["xlim"][1])
     else:
@@ -70,9 +72,20 @@ def main():
         fn = os.path.join(base, "%s-%s.cdf" % (metric, proto))
         label2cdf[PROTO2XLABEL[proto]] = read_cdf(fn)
     outfn = "%s/%s.pdf" % (base, metric)
-    plot_cdfs(label2cdf, outfn, xlabel="Number of Transactions in Connection",
+    plot_cdfs(label2cdf, outfn, xlabel="Number of Transactions in Session",
             ylabel="Cum. Frac. of Transferred Bytes",
-            xlim=(0, 500))
+            xlim=(1, 1000))
+
+    base = 'conn-sz-transactions'
+    metric = 'transactions'
+    label2cdf = OrderedDict()
+    for proto in ["http1", "all", "http2"]:
+        fn = os.path.join(base, "%s-%s.cdf" % (metric, proto))
+        label2cdf[PROTO2XLABEL[proto]] = read_cdf(fn)
+    outfn = "%s/%s.pdf" % (base, metric)
+    plot_cdfs(label2cdf, outfn, xlabel="Number of Transactions in Session",
+            ylabel="Cum. Frac. of Sessions",
+            xlim=(1, 1000))
 
 
 if __name__ == "__main__":
