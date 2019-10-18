@@ -2,7 +2,7 @@
 
 import sys
 
-import headers
+from fbperf import HEADERS
 
 
 def generate_route(
@@ -25,8 +25,8 @@ def generate_route(
         num_samples,
         num_samples,
         apm_route_num,
-        "peering",
-        "private",
+        "peering" if apm_route_num == 1 else "transit",
+        "private" if apm_route_num == 1 else "",
         as_path_len,
         as_path_strings,
         as_path_len_wo_prep,
@@ -116,32 +116,36 @@ def generate_week(r0even, r1even, boot_diff_even, r0odd, r1odd, boot_diff_odd):
     return rows
 
 R0 = ( 1, 30.0, 28.0, 32.0, 0.7, 0.68, 0.72, 0.7 )
-R0_BOOT_DIFF = (-0.01, 0.01)
 
-BETTER_R1 = ( 1, 20.0, 18.0, 22.0, 0.8, 0.78, 0.82, 0.8 )
+R1 = ( 2, 30.0, 28.0, 32.0, 0.7, 0.68, 0.72, 0.7 )
+R1_BOOT_DIFF = (-0.01, 0.01)
+
+BETTER_R1 = ( 2, 20.0, 18.0, 22.0, 0.8, 0.78, 0.82, 0.8 )
 BETTER_R1_BOOT_DIFF = (0.08, 0.12)
 
-WORSE_R1 = ( 1, 40.0, 38.0, 42.0, 0.6, 0.58, 0.62, 0.6 )
+WORSE_R0 = ( 1, 40.0, 38.0, 42.0, 0.6, 0.58, 0.62, 0.6 )
+
+WORSE_R1 = ( 2, 40.0, 38.0, 42.0, 0.6, 0.58, 0.62, 0.6 )
 WORSE_R1_BOOT_DIFF = (-0.12, -0.08)
 
 SPECS = {
     "no-opp--no-deg.csv": (
-        R0, R0, R0_BOOT_DIFF, R0, R0, R0_BOOT_DIFF
+        R0, R1, R1_BOOT_DIFF, R0, R1, R1_BOOT_DIFF
     ),
     "no-opp-worse--no-deg.csv": (
-        R0, WORSE_R1, WORSE_R1_BOOT_DIFF, R0, R0, R0_BOOT_DIFF
+        R0, WORSE_R1, WORSE_R1_BOOT_DIFF, R0, R1, R1_BOOT_DIFF
     ),
     "half-opp--no-deg.csv": (
-        R0, BETTER_R1, BETTER_R1_BOOT_DIFF, R0, R0, R0_BOOT_DIFF
+        R0, BETTER_R1, BETTER_R1_BOOT_DIFF, R0, R1, R1_BOOT_DIFF
     ),
     "full-opp--no-deg.csv": (
         R0, BETTER_R1, BETTER_R1_BOOT_DIFF, R0, BETTER_R1, BETTER_R1_BOOT_DIFF
     ),
     "half-opp--half-deg.csv": (
-        R0, BETTER_R1, BETTER_R1_BOOT_DIFF, WORSE_R1, WORSE_R1, R0_BOOT_DIFF
+        R0, BETTER_R1, BETTER_R1_BOOT_DIFF, WORSE_R0, WORSE_R1, R1_BOOT_DIFF
     ),
     "no-opp--half-deg.csv": (
-        R0, R0, R0_BOOT_DIFF, WORSE_R1, WORSE_R1, R0_BOOT_DIFF
+        R0, R1, R1_BOOT_DIFF, WORSE_R0, WORSE_R1, R1_BOOT_DIFF
     )
 }
 
@@ -149,7 +153,7 @@ SPECS = {
 def main():
     for fname, spec in SPECS.items():
         with open(fname, "w") as fd:
-            fd.write('\t'.join(headers.HEADERS) + "\n")
+            fd.write('\t'.join(HEADERS) + "\n")
             rows = generate_week(*spec)
             for row in rows:
                 fd.write("\t".join(str(x) for x in row) + "\n")
