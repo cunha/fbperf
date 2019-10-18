@@ -15,7 +15,7 @@ use crate::performance::perfstats::{TimeBinStats, TimeBinSummarizer, TimeBinSumm
 pub struct MinRtt50LowerBoundDegradationSummarizer {
     /// The minimum difference between the best `TimeBin` and other
     /// `TimeBin`s considered degradation.
-    min_diff_degradation: u16,
+    min_diff_degradation: f32,
     /// The maximum CI halfwidth of the performance difference between
     /// the best `TimeBin` and other `TimeBin`s. `TimeBin` comparisons
     /// whose CI halfwidth is above this threshold will not be
@@ -31,7 +31,7 @@ pub struct MinRtt50LowerBoundDegradationSummarizer {
     /// routes with large MinRTT P50 CIs, which could lead to later
     /// comparisons having large CI halfwidths (and filtering due to the
     /// CI halfwidth threshold).
-    max_minrtt50_ci_halfwidth: u16,
+    max_minrtt50_ci_halfwidth: f32,
     /// This stores the primary `RouteInfo` for the best `TimeBin` for
     /// each `PathId`, chosen based on the thresholds above. `PathId`s
     /// without a valid best `TimeBin` are not included in the mapping.
@@ -73,9 +73,9 @@ pub struct HdRatio50LowerBoundDegradationSummarizer {
 impl MinRtt50LowerBoundDegradationSummarizer {
     pub fn new(
         baseline_percentile: f32,
-        min_diff_degradation: u16,
+        min_diff_degradation: f32,
         max_diff_ci_halfwidth: f32,
-        max_minrtt50_ci_halfwidth: u16,
+        max_minrtt50_ci_halfwidth: f32,
         db: &DB,
     ) -> Self {
         let mut sum = Self {
@@ -90,7 +90,9 @@ impl MinRtt50LowerBoundDegradationSummarizer {
                 match timebin.get_primary_route_minrtt() {
                     None => continue,
                     Some(primary) => {
-                        if primary.minrtt_ms_p50_ci_halfwidth >= max_minrtt50_ci_halfwidth {
+                        if f32::from(primary.minrtt_ms_p50_ci_halfwidth)
+                            >= max_minrtt50_ci_halfwidth
+                        {
                             continue;
                         }
                         valid.push(**primary);
@@ -126,7 +128,7 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
                     TimeBinSummary::Valid(TimeBinStats {
                         diff_ci: diff,
                         diff_ci_halfwidth: halfwidth,
-                        is_shifted: diff - halfwidth > f32::from(self.min_diff_degradation),
+                        is_shifted: diff - halfwidth > self.min_diff_degradation,
                         primary_peer_type: primary.peer_type,
                         alternate_peer_type: bestroute.peer_type,
                         bitmask: 0,
@@ -149,8 +151,8 @@ impl TimeBinSummarizer for MinRtt50LowerBoundDegradationSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "minrtt50--deg--bound-true--diff-ci-{:0.2}--p50-ci-{}--min-deg-{}",
-            self.max_diff_ci_halfwidth, self.max_minrtt50_ci_halfwidth, self.min_diff_degradation
+            "minrtt50--deg--bound-true--diff-thresh-{:0.2}--diff-ci-{:0.2}--base-ci-{:0.2}",
+            self.min_diff_degradation, self.max_diff_ci_halfwidth, self.max_minrtt50_ci_halfwidth,
         )
     }
 }
@@ -234,8 +236,8 @@ impl TimeBinSummarizer for HdRatio50LowerBoundDegradationSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "hdratio50--deg--bound-true--diff-halfwidth-{:0.2}--base-halfwidth-{:0.2}--min-deg-{:0.2}",
-            self.max_diff_ci_halfwidth, self.max_hdratio50_ci_halfwidth, self.min_diff_degradation
+            "hdratio50--deg--bound-true--diff-thresh-{:0.2}--diff-ci-{:0.2}--base-ci-{:0.2}",
+            self.min_diff_degradation, self.max_diff_ci_halfwidth, self.max_hdratio50_ci_halfwidth,
         )
     }
 }
@@ -255,25 +257,25 @@ mod tests {
         let mut db: DB = DB::default();
         let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 8, 50, 60, 8);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 50);
 
         let mut db: DB = DB::default();
         let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 8, 60, 51, 8);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 50);
 
         let mut db: DB = DB::default();
         let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 12, 60, 51, 8);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 60);
 
         let mut db: DB = DB::default();
         let time2bin = TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 50, 51, 12, 60, 51, 12);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(!sum.pathid2baseroute.contains_key(&pid1));
 
         let mut db: DB = DB::default();
@@ -282,7 +284,7 @@ mod tests {
         let timebin = TimeBin::mock_minrtt_p50(BIN_DURATION_SECS, 40, 51, 12);
         time2bin.entry(BIN_DURATION_SECS).and_modify(|e| *e = timebin);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 50);
 
         let mut db: DB = DB::default();
@@ -291,7 +293,7 @@ mod tests {
         let timebin = TimeBin::mock_minrtt_p50(BIN_DURATION_SECS, 40, 51, 8);
         time2bin.entry(BIN_DURATION_SECS).and_modify(|e| *e = timebin);
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 40);
     }
 
@@ -310,7 +312,7 @@ mod tests {
         let nbins: u64 = time2bin.len() as u64;
         assert!(db.insert(pid1.clone(), time2bin).is_none());
         assert!(db.total_traffic == u128::from(nbins * TimeBin::MOCK_TOTAL_BYTES));
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 40);
 
         let mut db: DB = DB::default();
@@ -323,7 +325,7 @@ mod tests {
             time2bin.entry(i).and_modify(|e| *e = timebin);
         }
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(0.0, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 40);
     }
 
@@ -343,7 +345,7 @@ mod tests {
 
         for i in 0..nbins {
             let pct: f32 = i as f32 / nbins as f32;
-            let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0, 10.0, 10, &db);
+            let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0.0, 10.0, 10.0, &db);
             let offset: usize = usize::from(sum.pathid2baseroute[&pid1].minrtt_ms_p50 - 50);
             assert!(offset == i || offset == i + 1 || offset == i - 1);
         }
@@ -362,7 +364,7 @@ mod tests {
             // Half the timebins are ignored because of high variance,
             // so we have half the number of valid bins:
             let pct: f32 = i as f32 / nbins as f32;
-            let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0, 10.0, 10, &db);
+            let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0.0, 10.0, 10.0, &db);
             let offset: usize = usize::from(sum.pathid2baseroute[&pid1].minrtt_ms_p50 - 50);
             assert!(offset >= std::cmp::max(i, 2) - 2 && offset <= i + 2);
         }
@@ -384,7 +386,7 @@ mod tests {
         let nbins: u64 = time2bin.len() as u64;
         assert!(db.insert(pid1.clone(), time2bin).is_none());
         assert!(db.total_traffic == u128::from(nbins * TimeBin::MOCK_TOTAL_BYTES));
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 50);
 
         let mut db: DB = DB::default();
@@ -397,7 +399,7 @@ mod tests {
             time2bin.entry(i).and_modify(|e| *e = timebin);
         }
         assert!(db.insert(pid1.clone(), time2bin).is_none());
-        let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0, 10.0, 10, &db);
+        let sum = MinRtt50LowerBoundDegradationSummarizer::new(pct, 0.0, 10.0, 10.0, &db);
         assert!(sum.pathid2baseroute[&pid1].minrtt_ms_p50 == 40);
     }
 
@@ -490,7 +492,6 @@ mod tests {
         assert!(db.pathid2info.len() == 1);
 
         let sum = HdRatio50LowerBoundDegradationSummarizer::new(1.0, 0.0, 0.2, 0.2, &db);
-        println!("-----> {} ", sum.pathid2baseroute[&pid1].hdratio);
         assert!((sum.pathid2baseroute[&pid1].hdratio_p50 - 0.95).abs() < 1e-6);
 
         // ci_halfwidth = 2 * ((0.1/2)**2 + (0.1/2)**2).sqrt() = 0.14

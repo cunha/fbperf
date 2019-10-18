@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crossbeam::sync::WaitGroup;
 use log::{error, info};
@@ -22,7 +22,7 @@ use fbperf::performance::summarizers;
 struct Opt {
     #[structopt(parse(from_os_str))]
     /// The input CSV file
-    input: PathBuf,
+    input_files: Vec<PathBuf>,
     #[structopt(long, parse(from_os_str))]
     /// The output directory where to store files
     outdir: PathBuf,
@@ -33,21 +33,21 @@ struct Opt {
 }
 
 fn build_summarizers(db: &db::DB) -> Vec<Arc<dyn TimeBinSummarizer>> {
-    let max_minrtt50_ci_halfwidth: u16 = 25;
+    let max_minrtt50_ci_halfwidth: f32 = 20.0;
     let max_hdratio50_ci_halfwidth: f32 = 0.20;
-    let max_hdratio_boot_diff_ci_fullwidth: f32 = 0.20;
     let mut summarizers: Vec<Arc<dyn TimeBinSummarizer>> = Vec::new();
 
-    for &max_minrtt50_diff_ci_halfwidth in [10.0f32, 20.0f32].iter() {
-        for &min_minrtt50_diff in [5, 10, 20].iter() {
+    for &max_minrtt50_diff_ci_halfwidth in [10.0f32].iter() {
+        for &min_minrtt50_diff in [5.0, 10.0, 20.0].iter() {
             let ml = Arc::new(summarizers::opportunity::MinRtt50ImprovementSummarizer {
                 minrtt50_min_improv: min_minrtt50_diff,
                 max_minrtt50_diff_ci_halfwidth,
+                max_hdratio50_diff_ci_halfwidth: 0.1,
                 compare_lower_bound: true,
             });
             summarizers.push(ml);
         }
-        for &min_minrtt50_diff in [5, 10, 20, 50].iter() {
+        for &min_minrtt50_diff in [5.0, 10.0, 20.0, 50.0].iter() {
             let ml =
                 Arc::new(summarizers::degradation::MinRtt50LowerBoundDegradationSummarizer::new(
                     0.1,
@@ -59,8 +59,8 @@ fn build_summarizers(db: &db::DB) -> Vec<Arc<dyn TimeBinSummarizer>> {
             summarizers.push(ml);
         }
     }
-    for &min_hdratio_diff in [0.05, 0.1, 0.2].iter() {
-        for &max_hdratio50_diff_ci_halfwidth in [0.1f32, 0.2f32].iter() {
+    for &max_hdratio50_diff_ci_halfwidth in [0.1f32].iter() {
+        for &min_hdratio_diff in [0.05, 0.1, 0.2].iter() {
             let hl = Arc::new(summarizers::opportunity::HdRatio50ImprovementSummarizer {
                 hdratio50_min_improv: min_hdratio_diff,
                 max_hdratio50_diff_ci_halfwidth,
@@ -68,16 +68,7 @@ fn build_summarizers(db: &db::DB) -> Vec<Arc<dyn TimeBinSummarizer>> {
             });
             summarizers.push(hl);
         }
-        let hl =
-            Arc::new(summarizers::opportunity::HdRatioBootstrapDifferenceImprovementSummarizer {
-                hdratio_boot_min_improv: min_hdratio_diff,
-                max_hdratio_boot_diff_ci_fullwidth,
-                compare_lower_bound: true,
-            });
-        summarizers.push(hl);
-    }
-    for &min_hdratio_diff in [0.05, 0.1, 0.2, 0.5, 0.75].iter() {
-        for &max_hdratio50_diff_ci_halfwidth in [0.1f32, 0.2f32].iter() {
+        for &min_hdratio_diff in [0.05, 0.1, 0.2, 0.5, 0.75].iter() {
             let hl =
                 Arc::new(summarizers::degradation::HdRatio50LowerBoundDegradationSummarizer::new(
                     0.9,
@@ -88,6 +79,42 @@ fn build_summarizers(db: &db::DB) -> Vec<Arc<dyn TimeBinSummarizer>> {
                 ));
             summarizers.push(hl);
         }
+    }
+
+    let relationship_pairs = [
+        (
+            (1u32 << db::PeerType::PeeringPrivate as u8)
+                | (1 << db::PeerType::PeeringPublic as u8)
+                | (1 << db::PeerType::PeeringPaid as u8),
+            1u32 << db::PeerType::Transit as u8,
+        ),
+        (
+            1u32 << db::PeerType::PeeringPublic as u8,
+            (1u32 << db::PeerType::PeeringPrivate as u8 | 1u32 << db::PeerType::PeeringPaid as u8),
+        ),
+        (
+            (1u32 << db::PeerType::PeeringPrivate as u8 | 1u32 << db::PeerType::PeeringPaid as u8),
+            1u32 << db::PeerType::PeeringPublic as u8,
+        ),
+        (1u32 << db::PeerType::Transit as u8, 1u32 << db::PeerType::Transit as u8),
+    ];
+    for &(primary_bitmask, alternate_bitmask) in &relationship_pairs {
+        let ml = Arc::new(summarizers::relationships::MinRtt50RelationshipSummarizer {
+            primary_bitmask,
+            alternate_bitmask,
+            minrtt50_min_improv: 5.0,
+            max_minrtt50_diff_ci_halfwidth: 10.0,
+            compare_lower_bound: true,
+        });
+        summarizers.push(ml);
+        let ml = Arc::new(summarizers::relationships::HdRatio50RelationshipSummarizer {
+            primary_bitmask,
+            alternate_bitmask,
+            hdratio50_min_improv: 0.05,
+            max_hdratio50_diff_ci_halfwidth: 0.2,
+            compare_lower_bound: true,
+        });
+        summarizers.push(ml);
     }
     summarizers
 }
@@ -116,16 +143,63 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         diurnal_bad_bin_min_prob_shift: 0.5,
         uneventful_max_frac_shifted_bins: 0.0,
     });
+    configs.push(perfstats::TemporalConfig {
+        bin_duration_secs: 900,
+        min_days: 2,
+        min_frac_existing_bins: 0.8,
+        min_frac_bins_with_alternate: 0.8,
+        min_frac_valid_bins: 0.8,
+        continuous_min_frac_shifted_bins: 0.75,
+        diurnal_min_bad_bins: 8,
+        diurnal_bad_bin_min_prob_shift: 0.8,
+        uneventful_max_frac_shifted_bins: 0.05,
+    });
     configs
+}
+
+fn load_all_databases(opts: &Opt) -> db::DB {
+    let gdb_arc_mtx = Arc::new(Mutex::new(db::DB::default()));
+
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
+    let wg = WaitGroup::new();
+
+    let bin_duration_secs = opts.bin_duration_secs;
+    for input in opts.input_files.iter() {
+        let gdb_arc_mtx = Arc::clone(&gdb_arc_mtx);
+        let wg = wg.clone();
+        let input: PathBuf = input.clone();
+        pool.spawn(move || {
+            match db::DB::from_file(&input, bin_duration_secs) {
+                Ok(partial_db) => {
+                    let mut global_db = gdb_arc_mtx.lock().unwrap();
+                    global_db.merge(partial_db);
+                }
+                Err(e) => {
+                    error!("IO error processing {:?}", input);
+                    error!("{:?}", e);
+                }
+            }
+            drop(gdb_arc_mtx);
+            drop(wg);
+        });
+    }
+
+    wg.wait();
+    match Arc::try_unwrap(gdb_arc_mtx) {
+        Ok(mutex) => mutex.into_inner().unwrap(),
+        Err(_) => {
+            unreachable!();
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let opts = Opt::from_args();
 
-    let db_arc = Arc::new(db::DB::from_file(&opts.input, opts.bin_duration_secs)?);
-    info!("loaded DB with {} rows", db_arc.rows);
-    info!("db has {} paths, {} total traffic", db_arc.pathid2info.len(), db_arc.total_traffic);
+    let db_arc = Arc::new(load_all_databases(&opts));
+    info!("loaded global DB");
+    info!("{}", db_arc.stats());
 
     let tempconfigs: Vec<perfstats::TemporalConfig> = build_temporal_configs();
     let summarizers: Vec<Arc<dyn perfstats::TimeBinSummarizer>> = build_summarizers(&db_arc);

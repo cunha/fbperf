@@ -103,6 +103,12 @@ pub enum TemporalBehavior {
     Uninitialized = 7,
     SIZE = 8,
 }
+pub const VALID_TEMPORAL_BEHAVIORS: [TemporalBehavior; 4] = [
+    TemporalBehavior::Uneventful,
+    TemporalBehavior::Continuous,
+    TemporalBehavior::Diurnal,
+    TemporalBehavior::Episodic,
+];
 
 #[derive(Clone, Copy, Debug)]
 pub struct TemporalConfig {
@@ -228,6 +234,7 @@ impl DBSummary {
     ) -> Result<(), io::Error> {
         self.dump_cdfs(path, db, sum)?;
         self.dump_temporal_tables(path)?;
+        self.dump_path_summaries(path)?;
         Ok(())
     }
 
@@ -253,10 +260,64 @@ impl DBSummary {
             }),
         ];
 
-        for (data, compute_data) in data_specs.iter() {
-            for (metric, compute_diff_ci) in metric_specs.iter() {
-                for &weighted in [true, false].iter() {
-                    for &only_shifted_bins in [true, false].iter() {
+        for &weighted in [true, false].iter() {
+            for &only_shifted_bins in [true, false].iter() {
+                // `only_shifted_bins` used here to control whether to
+                // consider all TimeBinStats or just TimeBinStats in the
+                // table
+                let mut fpath = path.clone();
+                fpath.push(format!(
+                    "main_diff_weighted_{}_table_{}.cdf",
+                    weighted, only_shifted_bins
+                ));
+                self.dump_bin_cdf(&fpath, |pid: &db::PathId, _time: u64, bs: &TimeBinStats| {
+                    if only_shifted_bins {
+                        let psum: &PathSummary = &self.pathid2summary[pid];
+                        if !VALID_TEMPORAL_BEHAVIORS.contains(&psum.temporal_behavior) {
+                            return None;
+                        }
+                    }
+                    if weighted {
+                        Some((bs.diff_ci, bs.bytes as f64))
+                    } else {
+                        Some((bs.diff_ci, 1.0))
+                    }
+                })?;
+                let mut fpath = path.clone();
+                fpath
+                    .push(format!("main_lb_weighted_{}_table_{}.cdf", weighted, only_shifted_bins));
+                self.dump_bin_cdf(&fpath, |pid: &db::PathId, _time: u64, bs: &TimeBinStats| {
+                    if only_shifted_bins {
+                        let psum: &PathSummary = &self.pathid2summary[pid];
+                        if !VALID_TEMPORAL_BEHAVIORS.contains(&psum.temporal_behavior) {
+                            return None;
+                        }
+                    }
+                    if weighted {
+                        Some((bs.diff_ci - bs.diff_ci_halfwidth, bs.bytes as f64))
+                    } else {
+                        Some((bs.diff_ci - bs.diff_ci_halfwidth, 1.0))
+                    }
+                })?;
+                let mut fpath = path.clone();
+                fpath
+                    .push(format!("main_ub_weighted_{}_table_{}.cdf", weighted, only_shifted_bins));
+                self.dump_bin_cdf(&fpath, |pid: &db::PathId, _time: u64, bs: &TimeBinStats| {
+                    if only_shifted_bins {
+                        let psum: &PathSummary = &self.pathid2summary[pid];
+                        if !VALID_TEMPORAL_BEHAVIORS.contains(&psum.temporal_behavior) {
+                            return None;
+                        }
+                    }
+                    if weighted {
+                        Some((bs.diff_ci + bs.diff_ci_halfwidth, bs.bytes as f64))
+                    } else {
+                        Some((bs.diff_ci + bs.diff_ci_halfwidth, 1.0))
+                    }
+                })?;
+
+                for (data, compute_data) in data_specs.iter() {
+                    for (metric, compute_diff_ci) in metric_specs.iter() {
                         let mut fpath = path.clone();
                         fpath.push(format!(
                             "{}_{}_weighted_{}_shifted_{}.cdf",
@@ -510,7 +571,7 @@ impl DBSummary {
             } else {
                 Some((
                     f32::from(ps.shifted_bins) / (ps.time2binstats.len() as f32),
-                    ps.valid_bytes as f32,
+                    ps.valid_bytes as f64,
                 ))
             }
         })?;
@@ -534,7 +595,7 @@ impl DBSummary {
             } else {
                 Some((
                     f32::from(ps.distinct_shifts) / (ps.day2shifts.len() as f32),
-                    ps.valid_bytes as f32,
+                    ps.valid_bytes as f64,
                 ))
             }
         })?;
@@ -544,9 +605,9 @@ impl DBSummary {
 
     pub fn dump_bin_cdf<F>(&self, file: &PathBuf, getdata: F) -> Result<(), io::Error>
     where
-        F: Fn(&db::PathId, u64, &TimeBinStats) -> Option<(f32, f32)>,
+        F: Fn(&db::PathId, u64, &TimeBinStats) -> Option<(f32, f64)>,
     {
-        let mut data: Vec<(f32, f32)> = Vec::new();
+        let mut data: Vec<(f32, f64)> = Vec::new();
         for (pathid, psum) in self.pathid2summary.iter() {
             for (time, binstats) in psum.time2binstats.iter() {
                 if let Some(tup) = getdata(pathid, *time, binstats) {
@@ -554,21 +615,21 @@ impl DBSummary {
                 }
             }
         }
-        cdf::dump(&cdf::build(&mut data, 0.001), file)?;
+        cdf::dump(&cdf::build(&mut data, 0.0001), file)?;
         Ok(())
     }
 
     pub fn dump_path_cdf<F>(&self, file: &PathBuf, getdata: F) -> Result<(), io::Error>
     where
-        F: Fn(&db::PathId, &PathSummary) -> Option<(f32, f32)>,
+        F: Fn(&db::PathId, &PathSummary) -> Option<(f32, f64)>,
     {
-        let mut data: Vec<(f32, f32)> = Vec::new();
+        let mut data: Vec<(f32, f64)> = Vec::new();
         for (pathid, psum) in self.pathid2summary.iter() {
             if let Some(tup) = getdata(pathid, psum) {
                 data.push(tup);
             }
         }
-        cdf::dump(&cdf::build(&mut data, 0.001), file)?;
+        cdf::dump(&cdf::build(&mut data, 0.0001), file)?;
         Ok(())
     }
 
@@ -678,6 +739,22 @@ impl DBSummary {
 
         Ok(())
     }
+
+    fn dump_path_summaries(&self, path: &PathBuf) -> Result<(), io::Error> {
+        let mut filepath = path.clone();
+        filepath.push("path-summaries.txt");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(filepath)?;
+        let mut bw = io::BufWriter::new(file);
+        for (pid, psum) in &self.pathid2summary {
+            writeln!(bw, "{}", psum.text(&pid))?;
+        }
+        Ok(())
+    }
 }
 
 struct CdfDataConfig<'a, F, G>
@@ -698,7 +775,7 @@ fn compute_cdf_data<F, G>(
     db: &db::DB,
     sum: &dyn TimeBinSummarizer,
     config: CdfDataConfig<F, G>,
-) -> Option<(f32, f32)>
+) -> Option<(f32, f64)>
 where
     F: Fn(&db::RouteInfo, &db::RouteInfo) -> (f32, f32),
     G: Fn(f32, f32) -> f32,
@@ -709,8 +786,8 @@ where
         let (primary, alternate) = sum.get_routes(pathid, time, db);
         let (diff, interval) = (config.compute_diff_ci)(primary, alternate);
         let data: f32 = (config.compute_data)(diff, interval);
-        let weight: f32 = if config.weighted {
-            bs.bytes as f32
+        let weight: f64 = if config.weighted {
+            bs.bytes as f64
         } else {
             1.0
         };
@@ -816,6 +893,25 @@ impl PathSummary {
         self.bad_bins = bad_bins as u16;
         self.bad_bytes = bad_bytes;
     }
+
+    fn text(&self, pid: &db::PathId) -> String {
+        format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {:?}",
+            pid.text(),
+            self.distinct_shifts,
+            self.bad_bytes,
+            self.noroute_bytes,
+            self.shifted_bytes,
+            self.valid_bytes,
+            self.wideci_bytes,
+            self.bad_bins,
+            self.noroute_bins,
+            self.shifted_bins,
+            self.time2binstats.len(),
+            self.wideci_bins,
+            self.temporal_behavior
+        )
+    }
 }
 
 impl Default for TemporalBehavior {
@@ -881,8 +977,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 2,
+            minrtt50_min_improv: 2.0,
             max_minrtt50_diff_ci_halfwidth: 15.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
 
@@ -922,8 +1019,9 @@ mod tests {
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 1);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 2,
+            minrtt50_min_improv: 2.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -942,8 +1040,9 @@ mod tests {
 
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 1, 100, 50, 1);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 51,
+            minrtt50_min_improv: 51.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -969,8 +1068,9 @@ mod tests {
         let nbins = time2bin.len();
         assert!(nbins == BINS_IN_WEEK as usize);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 1,
+            minrtt50_min_improv: 1.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -989,8 +1089,9 @@ mod tests {
 
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 1);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -1015,8 +1116,9 @@ mod tests {
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 100);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 2,
+            minrtt50_min_improv: 2.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -1034,8 +1136,9 @@ mod tests {
         let time2bin =
             db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 100, 50, 1, 100, 50, 100);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 51,
+            minrtt50_min_improv: 51.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -1058,8 +1161,9 @@ mod tests {
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 51, 50, 100);
         let nbins = time2bin.len();
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 1,
+            minrtt50_min_improv: 1.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -1079,8 +1183,9 @@ mod tests {
 
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 100);
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let psum =
@@ -1104,8 +1209,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 55, 50, 1, 55, 50, 1);
@@ -1129,8 +1235,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let time2bin = db::TimeBin::mock_week_minrtt_p50(BIN_DURATION_SECS, 51, 50, 1, 55, 50, 1);
@@ -1154,8 +1261,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
         let mut time2bin =
@@ -1185,8 +1293,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
 
@@ -1214,8 +1323,9 @@ mod tests {
     #[test]
     fn test_db_reclassify() {
         let summarizer = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 5,
+            minrtt50_min_improv: 5.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: false,
         };
 

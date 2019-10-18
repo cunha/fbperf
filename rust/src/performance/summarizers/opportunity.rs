@@ -13,8 +13,9 @@ use crate::performance::perfstats::TimeBinSummarizer;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MinRtt50ImprovementSummarizer {
-    pub minrtt50_min_improv: u16,
+    pub minrtt50_min_improv: f32,
     pub max_minrtt50_diff_ci_halfwidth: f32,
+    pub max_hdratio50_diff_ci_halfwidth: f32,
     pub compare_lower_bound: bool,
 }
 
@@ -41,26 +42,33 @@ impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
             (None, _) => perfstats::TimeBinSummary::NoRoute,
             (_, None) => perfstats::TimeBinSummary::NoRoute,
             (Some(ref primary), Some(ref bestalt)) => {
-                let (diff, halfwidth) = db::RouteInfo::minrtt_median_diff_ci(primary, bestalt);
-                if halfwidth > self.max_minrtt50_diff_ci_halfwidth {
-                    perfstats::TimeBinSummary::WideConfidenceInterval
-                } else {
-                    let limit: f32 = if self.compare_lower_bound {
-                        diff - halfwidth
-                    } else {
-                        diff
-                    };
-
-                    perfstats::TimeBinSummary::Valid(perfstats::TimeBinStats {
-                        bytes: bin.bytes_acked_sum,
-                        diff_ci: diff,
-                        diff_ci_halfwidth: halfwidth,
-                        primary_peer_type: primary.peer_type,
-                        alternate_peer_type: bestalt.peer_type,
-                        bitmask: compute_bitmask(primary, bestalt),
-                        is_shifted: limit >= f32::from(self.minrtt50_min_improv),
-                    })
+                let (hd_diff, hd_halfwidth) =
+                    db::RouteInfo::hdratio_median_diff_ci(bestalt, primary);
+                let (rtt_diff, rtt_halfwidth) =
+                    db::RouteInfo::minrtt_median_diff_ci(primary, bestalt);
+                if hd_halfwidth > self.max_hdratio50_diff_ci_halfwidth {
+                    return perfstats::TimeBinSummary::WideConfidenceInterval;
                 }
+                if rtt_halfwidth > self.max_minrtt50_diff_ci_halfwidth {
+                    return perfstats::TimeBinSummary::WideConfidenceInterval;
+                }
+                // for hd_limit, add halfwidth to check upper bound is above zero:
+                let hd_limit: f32 = hd_diff + hd_halfwidth;
+                let rtt_limit: f32 = if self.compare_lower_bound {
+                    rtt_diff - rtt_halfwidth
+                } else {
+                    rtt_diff
+                };
+                let is_shifted = (rtt_limit >= self.minrtt50_min_improv) && (hd_limit >= 0.0);
+                perfstats::TimeBinSummary::Valid(perfstats::TimeBinStats {
+                    bytes: bin.bytes_acked_sum,
+                    diff_ci: rtt_diff,
+                    diff_ci_halfwidth: rtt_halfwidth,
+                    primary_peer_type: primary.peer_type,
+                    alternate_peer_type: bestalt.peer_type,
+                    bitmask: compute_bitmask(primary, bestalt),
+                    is_shifted,
+                })
             }
         }
     }
@@ -78,8 +86,11 @@ impl TimeBinSummarizer for MinRtt50ImprovementSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "minrtt50--opp--bound-{}--halfwidth-{:0.2}--min-improv-{}",
-            self.compare_lower_bound, self.max_minrtt50_diff_ci_halfwidth, self.minrtt50_min_improv,
+            "minrtt50--opp--bound-{}--diff-thresh-{:0.2}--diff-ci-{:0.2}--hdratio-diff-ci-{:0.2}",
+            self.compare_lower_bound,
+            self.minrtt50_min_improv,
+            self.max_minrtt50_diff_ci_halfwidth,
+            self.max_hdratio50_diff_ci_halfwidth,
         )
     }
 }
@@ -129,10 +140,10 @@ impl TimeBinSummarizer for HdRatio50ImprovementSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "hdratio50--opp--bound-{}--halfwidth-{:0.2}--min-improv-{:0.2}",
+            "hdratio50--opp--bound-{}--diff-thresh-{:0.2}--diff-ci-{:0.2}",
             self.compare_lower_bound,
-            self.max_hdratio50_diff_ci_halfwidth,
             self.hdratio50_min_improv,
+            self.max_hdratio50_diff_ci_halfwidth,
         )
     }
 }
@@ -186,10 +197,10 @@ impl TimeBinSummarizer for HdRatioBootstrapDifferenceImprovementSummarizer {
     }
     fn prefix(&self) -> String {
         format!(
-            "hdratioboot--opp--bound-{}--fullwidth-{:0.2}--min-improv-{:0.2}",
+            "hdratioboot--opp--bound-{}--diff-thresh-{:0.2}--diff-ci-{:0.2}",
             self.compare_lower_bound,
-            self.max_hdratio_boot_diff_ci_fullwidth,
             self.hdratio_boot_min_improv,
+            self.max_hdratio_boot_diff_ci_fullwidth,
         )
     }
 }
@@ -199,11 +210,11 @@ fn compute_bitmask(primary: &db::RouteInfo, bestalt: &db::RouteInfo) -> u8 {
     if bestalt.apm_route_num == 1 {
         bitmask |= perfstats::TimeBinStats::BEST_ALTERNATE_IS_BGP_PREFERRED;
     }
-    if bestalt.bgp_as_path_len > primary.bgp_as_path_len {
+    if bestalt.bgp_as_path_len_wo_prepend > primary.bgp_as_path_len_wo_prepend {
         bitmask |= perfstats::TimeBinStats::ALTERNATE_IS_LONGER;
-    }
-    if bestalt.bgp_as_path_prepends > primary.bgp_as_path_prepends {
-        bitmask |= perfstats::TimeBinStats::ALTERNATE_IS_PREPENDED_MORE;
+        if bestalt.bgp_as_path_prepends > primary.bgp_as_path_prepends {
+            bitmask |= perfstats::TimeBinStats::ALTERNATE_IS_PREPENDED_MORE;
+        }
     }
     bitmask
 }
@@ -296,8 +307,9 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 0,
+            minrtt50_min_improv: 0.0,
             max_minrtt50_diff_ci_halfwidth: 100.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: true,
         };
 
@@ -322,13 +334,15 @@ mod tests {
         let _pathid: db::PathId = db::tests::make_path_id();
 
         let sum1 = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 0,
+            minrtt50_min_improv: 0.0,
             max_minrtt50_diff_ci_halfwidth: 5.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: true,
         };
         let sum2 = MinRtt50ImprovementSummarizer {
-            minrtt50_min_improv: 0,
+            minrtt50_min_improv: 0.0,
             max_minrtt50_diff_ci_halfwidth: 6.0,
+            max_hdratio50_diff_ci_halfwidth: 0.4,
             compare_lower_bound: true,
         };
 

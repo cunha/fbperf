@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use flate2::bufread::GzDecoder;
 use ipnet::IpNet;
-use log::info;
+use log::{info, trace};
 use num_enum::TryFromPrimitive;
 use serde::Serialize;
 
@@ -77,6 +77,7 @@ pub struct TimeBin {
 pub struct RouteInfo {
     pub apm_route_num: u8,
     pub bgp_as_path_len: u8,
+    pub bgp_as_path_len_wo_prepend: u8,
     pub bgp_as_path_prepends: u8,
     // pub bgp_as_path_len_wo_prepend: u8,
     // pub bgp_as_path_prepending: bool,
@@ -87,8 +88,8 @@ pub struct RouteInfo {
     pub minrtt_ms_p50_ci_halfwidth: u16,
     // pub minrtt_ms_p50_var: f32,
     pub hdratio_num_samples: u32,
-    pub hdratio: f32,
-    pub hdratio_var: f32,
+    // pub hdratio: f32,
+    // pub hdratio_var: f32,
     pub hdratio_p50: f32,
     pub hdratio_p50_ci_halfwidth: f32,
     pub hdratio_boot: f32,
@@ -121,6 +122,26 @@ impl Default for PeerType {
 }
 
 impl DB {
+    pub fn merge(&mut self, db: DB) {
+        self.pathid2info.extend(db.pathid2info);
+        self.rows += db.rows;
+        self.total_bins = std::cmp::max(self.total_bins, db.total_bins);
+        self.total_traffic += db.total_traffic;
+        for (error, cnt) in db.error_counts {
+            self.error_counts.entry(error).and_modify(|e| *e += cnt).or_insert(cnt);
+        }
+    }
+    pub fn stats(&self) -> String {
+        format!(
+            "DB rows={} paths={} bins={} bytes={}\n{:?}",
+            self.rows,
+            self.pathid2info.len(),
+            self.total_bins,
+            self.total_traffic,
+            self.error_counts
+        )
+    }
+
     pub fn from_file(input: &PathBuf, bin_duration_secs: u32) -> Result<DB, std::io::Error> {
         let f = File::open(input)?;
         let filerdr = BufReader::new(f);
@@ -138,8 +159,8 @@ impl DB {
         for result in csvrdr.deserialize() {
             db.rows += 1;
             let record: HashMap<String, String> = result.unwrap();
-            if (db.rows % 10000) == 0 {
-                info!("{} rows", db.rows);
+            if (db.rows % 100_000) == 0 {
+                trace!("{:?} {} rows", input, db.rows);
             }
             let pid: Arc<PathId> = match PathId::from_record(&record) {
                 Ok(p) => Arc::new(p),
@@ -170,15 +191,8 @@ impl DB {
         }
         let seconds: u32 = (max_timestamp - min_timestamp) as u32;
         db.total_bins = seconds / bin_duration_secs;
-        info!(
-            "DB rows={} paths={} seconds={} bins={} bytes={}",
-            db.rows,
-            db.pathid2info.len(),
-            seconds,
-            db.total_bins,
-            db.total_traffic
-        );
-        info!("{:?}", db.error_counts);
+        info!("finished reading {:?}", input);
+        info!("{}", db.stats());
         Ok(db)
     }
 }
@@ -207,6 +221,16 @@ impl PathId {
                 client_country,
             })
         }
+    }
+    pub fn text(&self) -> String {
+        format!(
+            "{} {} {:?} {}{}",
+            self.vip_metro,
+            self.bgp_ip_prefix,
+            self.client_continent,
+            self.client_country[0],
+            self.client_country[1]
+        )
     }
 }
 
@@ -241,7 +265,7 @@ impl TimeBin {
         Ok(timebin)
     }
 
-    fn get_primary_route<F>(&self, check_valid: F) -> &Option<Box<RouteInfo>>
+    pub fn get_primary_route<F>(&self, check_valid: F) -> &Option<Box<RouteInfo>>
     where
         F: Fn(&RouteInfo) -> bool,
     {
@@ -266,7 +290,7 @@ impl TimeBin {
         self.get_primary_route(RouteInfo::hdratio_valid)
     }
 
-    fn get_best_alternate<F, G>(&self, compare: F, check_valid: G) -> &Option<Box<RouteInfo>>
+    pub fn get_best_alternate<F, G>(&self, compare: F, check_valid: G) -> &Option<Box<RouteInfo>>
     where
         F: Fn(&RouteInfo, &RouteInfo) -> Ordering,
         G: Fn(&RouteInfo) -> bool,
@@ -283,9 +307,9 @@ impl TimeBin {
                     // for best.  uncommenting the `if` below ignores
                     // the components of r0 and only consider other
                     // routes as alternates.
-                    // if rtbox.apm_route_num == 1 {
-                    //     continue;
-                    // }
+                    if rtbox.apm_route_num == 1 {
+                        continue;
+                    }
                     if !check_valid(rtbox.borrow()) {
                         continue;
                     }
@@ -316,6 +340,29 @@ impl TimeBin {
     {
         self.get_best_alternate(compare, RouteInfo::hdratio_valid)
     }
+
+    pub fn get_first_alternate<F>(&self, check_valid: F) -> &Option<Box<RouteInfo>>
+    where
+        F: Fn(&RouteInfo) -> bool,
+    {
+        for rtopt in &self.num2route[1..] {
+            match rtopt {
+                None => continue,
+                Some(ref rtbox) => {
+                    // Ignoring alternate routes with apm_route_num == 1 because
+                    // we want to compare routes with different relationships in
+                    // the relationship summarizers.
+                    if rtbox.apm_route_num == 1 {
+                        continue;
+                    }
+                    if check_valid(rtbox.borrow()) {
+                        return rtopt;
+                    }
+                }
+            }
+        }
+        &None
+    }
 }
 
 impl RouteInfo {
@@ -333,8 +380,8 @@ impl RouteInfo {
         let hdratio_num_samples: u32 = rec[&format!("r{}_num_samples_with_hdratio", i)].parse()?;
 
         let mut hdratio_p50_ci_halfwidth: f32 = 0.0;
-        let mut hdratio: f32 = 0.0;
-        let mut hdratio_var: f32 = 0.0;
+        // let mut hdratio: f32 = 0.0;
+        // let mut hdratio_var: f32 = 0.0;
         let mut hdratio_p50: f32 = 0.0;
         let mut hdratio_boot: f32 = 0.0;
         let mut r0_hdratio_boot_diff_ci_lb: f32 = 0.0;
@@ -343,8 +390,8 @@ impl RouteInfo {
             let hdratio_p50_ci_lb: f32 = rec[&format!("r{}_hdratio_p50_ci_lb", i)].parse().unwrap();
             let hdratio_p50_ci_ub: f32 = rec[&format!("r{}_hdratio_p50_ci_ub", i)].parse().unwrap();
             hdratio_p50_ci_halfwidth = (hdratio_p50_ci_ub - hdratio_p50_ci_lb) / 2.0;
-            hdratio = rec[&format!("r{}_hdratio_avg", i)].parse().unwrap();
-            hdratio_var = rec[&format!("r{}_hdratio_normal_var", i)].parse().unwrap();
+            // hdratio = rec[&format!("r{}_hdratio_avg", i)].parse().unwrap();
+            // hdratio_var = rec[&format!("r{}_hdratio_normal_var", i)].parse().unwrap();
             hdratio_p50 = rec[&format!("r{}_hdratio_p50", i)].parse().unwrap();
             hdratio_boot = rec[&format!("r{}_hdratio_avg_bootstrapped", i)].parse().unwrap();
             if i > 0 {
@@ -365,13 +412,14 @@ impl RouteInfo {
         let minrtt_ms_p50_ci_halfwidth = ((minrtt_ms_p50_ci_ub - minrtt_ms_p50_ci_lb) / 2.0) as u16;
 
         let bgp_as_path_len: u8 = rec[&format!("r{}_bgp_as_path_len", i)].parse().unwrap();
-        let bgp_as_path_wo_prepend: u8 =
+        let bgp_as_path_len_wo_prepend: u8 =
             rec[&format!("r{}_bgp_as_path_min_len_prepending_removed", i)].parse().unwrap();
 
         Ok(Box::new(RouteInfo {
             apm_route_num,
             bgp_as_path_len,
-            bgp_as_path_prepends: bgp_as_path_len - bgp_as_path_wo_prepend,
+            bgp_as_path_len_wo_prepend,
+            bgp_as_path_prepends: bgp_as_path_len - bgp_as_path_len_wo_prepend,
             peer_type: PeerType::new(
                 &rec[&format!("r{}_peer_type", i)],
                 &rec[&format!("r{}_peer_subtype", i)],
@@ -382,8 +430,8 @@ impl RouteInfo {
             minrtt_ms_p50_ci_halfwidth,
             // minrtt_ms_p50_var: rec[&format!("r{}_minrtt_ms_p50_var", i)].parse().unwrap(),
             hdratio_num_samples,
-            hdratio,
-            hdratio_var,
+            // hdratio,
+            // hdratio_var,
             hdratio_p50,
             hdratio_p50_ci_halfwidth,
             hdratio_boot,
@@ -413,15 +461,15 @@ impl RouteInfo {
         (md, halfwidth)
     }
 
-    pub fn hdratio_diff_ci_do_not_use(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
-        let diff: f32 = rt1.hdratio - rt2.hdratio;
-        let var1: f32 = rt1.hdratio_var;
-        let var2: f32 = rt2.hdratio_var;
-        let n1: f32 = rt1.hdratio_num_samples as f32;
-        let n2: f32 = rt2.hdratio_num_samples as f32;
-        let halfwidth: f32 = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
-        (diff, halfwidth)
-    }
+    // pub fn hdratio_diff_ci_do_not_use(rt1: &RouteInfo, rt2: &RouteInfo) -> (f32, f32) {
+    //     let diff: f32 = rt1.hdratio - rt2.hdratio;
+    //     let var1: f32 = rt1.hdratio_var;
+    //     let var2: f32 = rt2.hdratio_var;
+    //     let n1: f32 = rt1.hdratio_num_samples as f32;
+    //     let n2: f32 = rt2.hdratio_num_samples as f32;
+    //     let halfwidth: f32 = CONFIDENCE_Z * (var1 / n1 + var2 / n2).sqrt();
+    //     (diff, halfwidth)
+    // }
 
     pub fn hdratio_boot_diff_ci(bestalt: &RouteInfo, primary: &RouteInfo) -> (f32, f32, f32) {
         let mut diff: f32 = bestalt.hdratio_boot - primary.hdratio_boot;
@@ -443,9 +491,9 @@ impl RouteInfo {
         rt1.hdratio_p50.partial_cmp(&rt2.hdratio_p50).unwrap_or(Ordering::Equal)
     }
 
-    pub fn compare_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
-        rt1.hdratio.partial_cmp(&rt2.hdratio).unwrap_or(Ordering::Equal)
-    }
+    // pub fn compare_hdratio(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
+    //     rt1.hdratio.partial_cmp(&rt2.hdratio).unwrap_or(Ordering::Equal)
+    // }
 
     pub fn compare_hdratio_bootstrap(rt1: &RouteInfo, rt2: &RouteInfo) -> Ordering {
         rt1.hdratio_boot.partial_cmp(&rt2.hdratio_boot).unwrap_or(Ordering::Equal)
@@ -665,14 +713,19 @@ pub(crate) mod tests {
             RouteInfo {
                 apm_route_num,
                 bgp_as_path_len: 3,
+                bgp_as_path_len_wo_prepend: 2,
                 bgp_as_path_prepends: 1,
-                peer_type: PeerType::Transit,
+                peer_type: if apm_route_num == 1 {
+                    PeerType::PeeringPrivate
+                } else {
+                    PeerType::Transit
+                },
                 minrtt_num_samples: 200,
                 minrtt_ms_p50,
                 minrtt_ms_p50_ci_halfwidth,
                 hdratio_num_samples: 200,
-                hdratio: 0.9,
-                hdratio_var: 0.01,
+                // hdratio: 0.9,
+                // hdratio_var: 0.01,
                 hdratio_p50: 1.0,
                 hdratio_p50_ci_halfwidth: 0.01,
                 hdratio_boot: 0.9,
@@ -690,14 +743,19 @@ pub(crate) mod tests {
             RouteInfo {
                 apm_route_num,
                 bgp_as_path_len: 3,
+                bgp_as_path_len_wo_prepend: 2,
                 bgp_as_path_prepends: 1,
-                peer_type: PeerType::Transit,
+                peer_type: if apm_route_num == 1 {
+                    PeerType::PeeringPrivate
+                } else {
+                    PeerType::Transit
+                },
                 minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
                 minrtt_ms_p50: 20,
                 minrtt_ms_p50_ci_halfwidth: 1,
                 hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
-                hdratio: 0.9,
-                hdratio_var: 0.2,
+                // hdratio: 0.9,
+                // hdratio_var: 0.2,
                 hdratio_p50,
                 hdratio_p50_ci_halfwidth,
                 hdratio_boot: 0.9,
@@ -716,14 +774,15 @@ pub(crate) mod tests {
             RouteInfo {
                 apm_route_num,
                 bgp_as_path_len: 3,
+                bgp_as_path_len_wo_prepend: 2,
                 bgp_as_path_prepends: 1,
                 peer_type: PeerType::Transit,
                 minrtt_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
                 minrtt_ms_p50: 20,
                 minrtt_ms_p50_ci_halfwidth: 1,
                 hdratio_num_samples: RouteInfo::MOCK_NUM_SAMPLES,
-                hdratio: 0.9,
-                hdratio_var: 0.1,
+                // hdratio: 0.9,
+                // hdratio_var: 0.1,
                 hdratio_p50: 1.0,
                 hdratio_p50_ci_halfwidth: 0.01,
                 hdratio_boot,
