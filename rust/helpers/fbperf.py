@@ -630,7 +630,8 @@ class Plots:
         "minrtt50": {
             "opp": "$\\mathrm{MinRTT}_\\mathrm{P50}$ Difference [Preferred $-$ Alternate]",
             "deg": "$\\mathrm{MinRTT}_\\mathrm{P50}$ Degradation [Current $-$ Baseline]",
-            "relationships": "$\\mathrm{MinRTT}_\\mathrm{P50}$ Difference",
+            # "relationships": "$\\mathrm{MinRTT}_\\mathrm{P50}$ Difference",
+            "relationships": "Median Minimum RTT Difference [ms]",
         },
         "hdratio50": {
             "opp": "$\\mathrm{HDratio}_\\mathrm{P50}$ Difference [Alternate $-$ Preferred]",
@@ -662,7 +663,7 @@ class Plots:
                 (
                     (METRIC_SUMMARY_XLIM["minrtt50"]["opp"][0] + 1, 0.25),
                     "left",
-                    "Preferred\nis better",
+                    "BGP\nis better",
                 ),
                 (
                     (METRIC_SUMMARY_XLIM["minrtt50"]["opp"][1] - 1, 0.75),

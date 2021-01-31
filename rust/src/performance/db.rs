@@ -222,6 +222,30 @@ impl PathId {
             })
         }
     }
+    pub fn from_text(line: &str) -> Option<PathId> {
+        let fields: Vec<&str> = line.split(' ').collect();
+        if fields.len() != 4 {
+            return None;
+        }
+        let bgp_ip_prefix: IpNet = match fields[1].parse::<IpNet>() {
+            Ok(ipnet) => ipnet,
+            Err(_) => return None,
+        };
+        let client_continent: ClientContinent = match fields[2].parse::<ClientContinent>() {
+            Ok(continent) => continent,
+            Err(_) => return None,
+        };
+        let mut client_country: [char; 2] = ['a', 'a'];
+        let mut chars = fields[3].chars();
+        client_country[0] = chars.next().unwrap();
+        client_country[1] = chars.next().unwrap();
+        Some(PathId {
+            vip_metro: fields[0].to_owned(),
+            bgp_ip_prefix,
+            client_continent,
+            client_country,
+        })
+    }
     pub fn text(&self) -> String {
         format!(
             "{} {} {:?} {}{}",

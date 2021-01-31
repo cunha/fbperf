@@ -1,6 +1,9 @@
 #!/bin/bash
 set -eu
 
+# This script is deprecated as the dump it points to is for plotting
+# CDFs of traffic volume, not number of sessions.
+
 INPUT=/home/cunha/Dropbox/shared/SIGCOMM-2019-Daiquery/imc2019/0510/daiquery_2428570520535743.csv.gz
 RTT_MIN_SAMPLES=200
 HDR_MIN_SAMPLES=200
@@ -8,6 +11,7 @@ CONTINENTS="AF AS EU NA OC SA"
 
 mkdir -p rtt
 mkdir -p hdr
+mkdir -p correlation
 
 zcat $INPUT \
         | xsv select -d '\t' \
@@ -21,22 +25,8 @@ zcat $INPUT \
         | tail -n +2 \
         | awk -F, '{if($2>='$HDR_MIN_SAMPLES'&&$4!="NULL"){print $4,$3 >> "hdr/"$1".data";}}'
 
-
-for metric in rtt hdr ; do
+for metric in rtt hdr correlation ; do
 for continent in $CONTINENTS ; do
     gzip $metric/$continent.data
 done
 done
-
-for metric in rtt hdr ; do
-    zcat $metric/*.data.gz \
-            | sort --numeric-sort --key 1 --field-separator " " \
-            | buildcdf > $metric/all.cdf
-for continent in $CONTINENTS ; do
-    zcat $metric/$continent.data.gz \
-            | sort --numeric-sort --key 1 --field-separator " " \
-            | buildcdf > $metric/$continent.cdf
-done
-done
-
-

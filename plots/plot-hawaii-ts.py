@@ -86,11 +86,11 @@ def plot_numsamples(ts_all, ts_ca, ts_hi, outfn):
     fmt = mdates.DateFormatter('%Y-%m-%d')
 
     fig, ax1 = plt.subplots(figsize=(8,4))
-    # fig.autofmt_xdate()
     ax1.tick_params(axis="both", which="major", labelsize=12)
     ax1.xaxis_date()
     ax1.xaxis.set_major_formatter(fmt)
     ax1.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+    fig.autofmt_xdate()
 
     xlim0 = min(ts_all)[0]
     xlim1 = max(ts_all)[0]

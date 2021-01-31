@@ -4,3 +4,6 @@ ns3-tcp/*.cdf
 ns3-tcp/*.txt
 ns3-tcp/no-slow-start
 ns3-tcp/slowstart
+plots/**/*.cdf
+*.png
+*data.gz

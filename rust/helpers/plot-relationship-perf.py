@@ -29,7 +29,7 @@ METRICS = ["minrtt50", "hdratio50"]
 
 SPECS = {
     (7, 8): "Peering vs Transit",
-    (8, 8): "Transit vs Transit",
+    # commented out for HotNets: (8, 8): "Transit vs Transit",
     (5, 2): "Private vs Public",
 }
 

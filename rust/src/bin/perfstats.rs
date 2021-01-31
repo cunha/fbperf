@@ -1,5 +1,8 @@
 use std::borrow::Borrow;
+use std::collections::HashSet;
 use std::error::Error;
+use std::fs;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +29,8 @@ struct Opt {
     #[structopt(long, parse(from_os_str))]
     /// The output directory where to store files
     outdir: PathBuf,
+    #[structopt(long, parse(from_os_str), default_value = "")]
+    pathid_dump_list_file: PathBuf,
     #[structopt(long, default_value = "900")]
     bin_duration_secs: u32,
     #[structopt(long, default_value = "4")]
@@ -149,7 +154,7 @@ fn build_temporal_configs() -> Vec<perfstats::TemporalConfig> {
         min_frac_existing_bins: 0.8,
         min_frac_bins_with_alternate: 0.8,
         min_frac_valid_bins: 0.8,
-        continuous_min_frac_shifted_bins: 0.75,
+        continuous_min_frac_shifted_bins: 0.90,
         diurnal_min_bad_bins: 8,
         diurnal_bad_bin_min_prob_shift: 0.8,
         uneventful_max_frac_shifted_bins: 0.05,
@@ -193,9 +198,68 @@ fn load_all_databases(opts: &Opt) -> db::DB {
     }
 }
 
+fn load_pathid_timeseries(input: &PathBuf) -> Result<HashSet<db::PathId>, Box<dyn Error>> {
+    let mut pathids: HashSet<db::PathId> = HashSet::new();
+    if input.to_str().unwrap() == "" {
+        return Ok(pathids);
+    }
+    let f = fs::File::open(input)?;
+    let filerdr = BufReader::new(f);
+    for line in filerdr.lines() {
+        let line = line?;
+        if let Some(pathid) = db::PathId::from_text(&line) {
+            pathids.insert(pathid);
+        } else {
+            error!("Could not parse PathId from line [{}]", &line);
+        }
+    }
+    info!("will dump {} PathIds for timeseries plotting", pathids.len());
+    Ok(pathids)
+}
+
+fn dump_pathid_timeseries(
+    db: &db::DB,
+    dbsum: &perfstats::DBSummary,
+    path: &PathBuf,
+    pathids: &HashSet<db::PathId>,
+) -> Result<(), Box<dyn Error>> {
+    let mut filepath = path.clone();
+    filepath.push("pathid-timeseries-dump.txt");
+    let file =
+        fs::OpenOptions::new().read(true).write(true).truncate(true).create(true).open(filepath)?;
+    let mut bw = BufWriter::new(file);
+    for pid in pathids {
+        let pinfo = &db.pathid2info[pid];
+        let psum = match dbsum.pathid2summary.get(pid) {
+            Some(psum) => psum,
+            None => continue,
+        };
+        for (time, bin) in pinfo.time2bin.iter() {
+            let (is_shifted, diff_ci) = match psum.time2binstats.get(time) {
+                Some(binstats) => (binstats.is_shifted as u8, binstats.diff_ci),
+                None => (0, 0.0),
+            };
+            write!(bw, "{} {} {} {}", pid.text(), bin.bytes_acked_sum, is_shifted, diff_ci,)?;
+            for rtopt in bin.num2route.iter() {
+                match rtopt {
+                    Some(rtinfo) => write!(
+                        bw,
+                        "{} {} {}",
+                        rtinfo.minrtt_ms_p50, rtinfo.hdratio_p50, rtinfo.px_nexthops
+                    )?,
+                    None => write!(bw, " NULL NULL NULL")?,
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
     let opts = Opt::from_args();
+
+    let pathids: HashSet<db::PathId> = load_pathid_timeseries(&opts.pathid_dump_list_file).unwrap();
 
     let db_arc = Arc::new(load_all_databases(&opts));
     info!("loaded global DB");
@@ -213,6 +277,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let wg = wg.clone();
         let opts = opts.clone();
         let tempconfigs = tempconfigs.clone();
+        let pathids = pathids.clone();
         pool.spawn(move || {
             let mut dbsum: perfstats::DBSummary =
                 perfstats::DBSummary::build(&db, summarizer.borrow(), &tempconfigs[0]);
@@ -240,6 +305,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                         );
                         error!("{:?}", e);
                     });
+                dump_pathid_timeseries(&db, &dbsum, &dir, &pathids).unwrap_or_else(|e| {
+                    error!("{}: could not dump prefix timeseries", summarizer.prefix());
+                    error!("{:?}", e);
+                })
             }
             drop(db);
             drop(summarizer);

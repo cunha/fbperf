@@ -26,8 +26,8 @@ def create_parser():
     )
     return parser
 
-XLABEL = {"minrtt": "Median MinRTT Difference (ms) [Preferred $-$ Alternate]",
-"hdrati": "HDratio Difference [Alternate $-$ Preferred]"}
+XLABEL = {"minrtt": "Median MinRTT Difference (ms) [BGP $-$ Alternate]",
+"hdrati": "HDratio Difference [BGP $-$ Preferred]"}
 
 
 def plot_summarizer_diff_ci(subdir, sumstr):

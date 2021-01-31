@@ -129,15 +129,16 @@ def main():
             xlim=METRIC2XLIM[metric])
 
     metric = "hdr"
-    label2cdf = OrderedDict()
-    for rng in reversed(["0-30", "31-50", "51-80", "81+"]):
-        fn = os.path.join('%s.cdf' % rng)
-        label2cdf[rng] = read_cdf(fn)
-    outfn = os.path.join(f"rtt-hdr-correlation-wide.pdf")
-    plot_cdfs(label2cdf, outfn, lines, xlabel=METRIC2XLABEL[metric],
-            ylabel="Cum. Fraction of Sessions",
-            xlim=METRIC2XLIM[metric],
-            figsize=(7,3.5))
+    for cont in ["all", "OC", "NA", "EU", "SA", "AS", "AF"]:
+        label2cdf = dict()
+        for rng in reversed(["0-30", "31-50", "51-80", "81+"]):
+            fn = os.path.join(f'correlation/{cont}-{rng}.cdf')
+            label2cdf[rng] = read_cdf(fn)
+        outfn = os.path.join(f"correlation/{cont}-rtt-hdr-correlation-wide.pdf")
+        plot_cdfs(label2cdf, outfn, lines, xlabel=METRIC2XLABEL[metric],
+                ylabel="Cum. Fraction of Sessions",
+                xlim=METRIC2XLIM[metric],
+                figsize=(7,3.5))
 
     label2cdf = OrderedDict()
     rttcdf = read_cdf("8a-minrtt.cdf")

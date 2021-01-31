@@ -23,8 +23,8 @@ set -eu
 FIELDS="sorting_key vip_metro bgp_prefix cont cc distinct_shifts bad_bytes noroute_bytes shifted_bytes valid_bytes wideci_bytes bad_bins noroute_bins shifted_bins valid_bins wideci_bins temporal_behavior"
 
 # sorting key for continuous: shifted_bins/valid_bins
-# sorting key for diurnal: bad_bins/shifted_bins
-# sorting key for episodic: bad_bins/distinct_shifts
+# sorting key for diurnal: bad_bytes/shifted_bytes
+# sorting key for episodic: shifted_bins/distinct_shifts
 
 function sort_continuous {
     local fn=$1
@@ -33,7 +33,7 @@ function sort_continuous {
 
 function sort_diurnal {
     local fn=$1
-    grep Diurnal $fn | awk '{print $11/$13,$0;}' | sort -k 1 -g
+    grep Diurnal $fn | awk '{print $6/$8,$0;}' | sort -k 1 -g
 }
 
 function sort_episodic {
@@ -47,7 +47,7 @@ TEMPDIR=../output-5410-talk/tempconfig--bin-900--days-2--fracExisting-0.80--frac
 mkdir -p $OUTDIR
 basename $TEMPDIR > $OUTDIR/temp-config.txt
 
-CONFIGS="hdratio50--deg--bound-true--diff-thresh-0.10--diff-ci-0.10--base-ci-0.20:hdratio50-deg-0.10 hdratio50--opp--bound-true--diff-thresh-0.10--diff-ci-0.10:hdratio50-opp-0.10 minrtt50--deg--bound-true--diff-thresh-10.00--diff-ci-10.00--base-ci-20.00:minrtt50-deg-10.0 minrtt50--opp--bound-true--diff-thresh-10.00--diff-ci-10.00--hdratio-diff-ci-0.10:minrtt50-opp-10.0"
+CONFIGS="hdratio50--deg--bound-true--diff-thresh-0.10--diff-ci-0.10--base-ci-0.20:hdratio50-deg-0.10 hdratio50--opp--bound-true--diff-thresh-0.10--diff-ci-0.10:hdratio50-opp-0.10 minrtt50--deg--bound-true--diff-thresh-10.00--diff-ci-10.00--base-ci-20.00:minrtt50-deg-10.0 minrtt50--deg--bound-true--diff-thresh-5.00--diff-ci-10.00--base-ci-20.00:minrtt50-deg-5.0 minrtt50--opp--bound-true--diff-thresh-10.00--diff-ci-10.00--hdratio-diff-ci-0.10:minrtt50-opp-10.0"
 
 for cfgspec in $CONFIGS ; do
     dir=${cfgspec%%:*}
